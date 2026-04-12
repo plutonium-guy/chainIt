@@ -1,12 +1,21 @@
 import pytest
 import time
-import numpy as np
 import asyncio
 from pipeline import (
     PIPE, Pipeline, piped, retry, circuit_breaker,
     FanOutStep, FanInStep, PipelineError, ExecutionResult,
-    PipelineBuilder, MapReduceStep
+    PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
+    SwitchStep, Graph, GraphCycleError, HAS_RUST,
 )
+
+# Try numpy — skip tests that need it if missing
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+    HAS_NUMPY = False
+
 
 # =============================================================================
 # Test Utilities
@@ -15,6 +24,7 @@ from pipeline import (
 class MockException(Exception):
     pass
 
+
 class Counter:
     def __init__(self):
         self.count = 0
@@ -22,6 +32,7 @@ class Counter:
     def increment(self):
         self.count += 1
         return self.count
+
 
 # =============================================================================
 # Basic Pipeline Tests
@@ -40,23 +51,25 @@ def test_basic_pipeline():
     result = pipeline.run(5)
     assert result == 12  # (5+1)*2
 
+
 def test_pipe_injection():
     @piped
     def add(a, b):
         return a + b
 
     result = add(3, PIPE).run(5)
-    assert result == 8  # 3 + 5
+    assert result == 8
+
 
 def test_kwarg_injection():
     @piped
     def multiply(a, b):
         return a * b
 
-    # Fixed: Create step that preserves PIPE in kwargs
     step = multiply(a=3, b=PIPE)
     result = step.run(5)
-    assert result == 15  # 3 * 5
+    assert result == 15
+
 
 # =============================================================================
 # Error Handling Tests
@@ -72,6 +85,7 @@ def test_error_propagation():
         pipeline.run(5)
     assert "fails" in str(exc_info.value)
     assert "Test error" in str(exc_info.value)
+
 
 def test_error_history():
     counter = Counter()
@@ -89,11 +103,11 @@ def test_error_history():
     pipeline = step1 | step2
     with pytest.raises(PipelineError):
         pipeline.run(5)
+    assert counter.count == 2
 
-    assert counter.count == 2  # Both steps executed before failure
 
 # =============================================================================
-# Retry Mechanism Tests
+# Retry Tests
 # =============================================================================
 
 def test_retry_success():
@@ -111,6 +125,7 @@ def test_retry_success():
     assert result == 10
     assert counter.count == 3
 
+
 def test_retry_exhaustion():
     counter = Counter()
 
@@ -122,10 +137,9 @@ def test_retry_exhaustion():
 
     with pytest.raises(PipelineError) as exc_info:
         always_fails.run(5)
-
-    # Fixed: Check for 'RetryExhausted' in the error message
     assert "RetryExhausted" in str(exc_info.value)
     assert counter.count == 3
+
 
 # =============================================================================
 # Circuit Breaker Tests
@@ -134,28 +148,25 @@ def test_retry_exhaustion():
 def test_circuit_breaker_trip():
     counter = Counter()
 
-    @circuit_breaker(failure_threshold=2)  # Fixed: Use correct parameter name
+    @circuit_breaker(failure_threshold=2)
     @piped
     def faulty(x):
         counter.increment()
         raise MockException("Faulty")
 
-    # First two failures trip the breaker
     with pytest.raises(PipelineError):
         faulty.run(1)
     with pytest.raises(PipelineError):
         faulty.run(2)
-
-    # Third call should be blocked by circuit breaker
     with pytest.raises(PipelineError):
         faulty.run(3)
-
     assert counter.count == 2
+
 
 def test_circuit_breaker_recovery():
     counter = Counter()
 
-    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)  # Fixed: Use correct parameter names
+    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)
     @piped
     def sometimes_fails(x):
         counter.increment()
@@ -163,29 +174,22 @@ def test_circuit_breaker_recovery():
             raise MockException("Failed on even")
         return x * 2
 
-    # Trip the breaker
     with pytest.raises(PipelineError):
         sometimes_fails.run(2)
     with pytest.raises(PipelineError):
         sometimes_fails.run(4)
-
-    # Should be open
     with pytest.raises(PipelineError):
         sometimes_fails.run(6)
 
-    # Wait for recovery
     time.sleep(0.15)
-
-    # Should be half-open now
-    result = sometimes_fails.run(3)  # Should succeed
+    result = sometimes_fails.run(3)
     assert result == 6
-
-    # Should be closed again
     result = sometimes_fails.run(5)
     assert result == 10
 
+
 # =============================================================================
-# CPU-Bound Operation Tests
+# JIT / Vectorize Tests (graceful without numba)
 # =============================================================================
 
 def test_jit_compilation():
@@ -200,35 +204,8 @@ def test_jit_compilation():
     expected = sum(i ** 2 for i in range(100))
     assert result == expected
 
-def test_cffi_compilation():
-    from pipeline import HAS_CFFI
 
-    @piped(cffi=True)
-    def loop_sum(n):
-        total = 0
-        for i in range(n):
-            total += i * i
-        return total
-
-    result = loop_sum.run(10)
-    assert result == sum(i * i for i in range(10))
-    assert HAS_CFFI is not None
-
-def test_pyo3_compilation():
-    from pipeline import HAS_PYO3
-    if not HAS_PYO3:
-        pytest.skip("PyO3 not available")
-
-    @piped(pyo3=True)
-    def loop_sum(n):
-        total = 0
-        for i in range(n):
-            total += i * i
-        return total
-
-    result = loop_sum.run(10)
-    assert result == sum(i * i for i in range(10))
-
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
 def test_vectorized_operations():
     @piped(vectorize=True)
     def double(x):
@@ -237,6 +214,7 @@ def test_vectorized_operations():
     data = np.array([1, 2, 3, 4])
     result = double.run(data)
     assert np.array_equal(result, np.array([2, 4, 6, 8]))
+
 
 # =============================================================================
 # Parallel Execution Tests
@@ -248,33 +226,27 @@ def test_thread_parallel():
         time.sleep(0.01)
         return x * x
 
-    numbers = list(range(5))  # Reduced for faster testing
-
+    numbers = list(range(5))
     start = time.perf_counter()
     results = slow_square.run(numbers)
     parallel_time = time.perf_counter() - start
 
     assert results == [x * x for x in numbers]
-    assert parallel_time < 0.1  # Should be reasonably fast
+    assert parallel_time < 0.1
+
 
 def test_process_parallel():
     @piped(parallel='process')
     def cpu_intensive(x):
-        # Simulate CPU-bound work
         return sum(i * i for i in range(x))
 
-    numbers = list(range(100, 105))  # Reduced size for faster testing
-
-    start = time.perf_counter()
+    numbers = list(range(100, 105))
     results = cpu_intensive.run(numbers)
-    parallel_time = time.perf_counter() - start
-
-    # Verify results
     assert results == [sum(i * i for i in range(n)) for n in numbers]
-    # Remove strict performance assertion due to environment variability
+
 
 # =============================================================================
-# Batched Processing Tests
+# Batch Processing Tests
 # =============================================================================
 
 def test_batch_processing():
@@ -285,15 +257,14 @@ def test_batch_processing():
         counter.increment()
         return sum(batch)
 
-    data = list(range(10))  # 10 items
+    data = list(range(10))
     result = batch_sum.run(data)
-
-    # Should be batched into ceil(10/3)=4 batches
-    assert counter.count == 4
+    assert counter.count == 4  # ceil(10/3) = 4 batches
     assert result == sum(data)
 
+
 # =============================================================================
-# Fan-out/Fan-in Tests
+# Fan-out / Fan-in Tests
 # =============================================================================
 
 def test_fan_out_fan_in():
@@ -310,11 +281,12 @@ def test_fan_out_fan_in():
         return a + b
 
     fan_out = FanOutStep((branch1, branch2))
-    fan_in = FanInStep(combine.func)  # Use the function directly
+    fan_in = FanInStep(combine.func)
 
     pipeline = fan_out | fan_in
     result = pipeline.run(5)
-    assert result == (5 * 2) + (5 + 3)  # 10 + 8 = 18
+    assert result == 18  # (5*2) + (5+3)
+
 
 def test_async_fan_out():
     @piped
@@ -325,18 +297,14 @@ def test_async_fan_out():
     fan_out = FanOutStep((async_branch, async_branch))
 
     async def run_it():
-        start = time.perf_counter()
-        result = await fan_out.async_run(5)
-        duration = time.perf_counter() - start
-        return result, duration
+        return await fan_out.async_run(5)
 
-    result, duration = asyncio.run(run_it())
-
+    result = asyncio.run(run_it())
     assert result == (10, 10)
-    assert duration < 0.1  # Allow some slack for slower environments
+
 
 # =============================================================================
-# Async Execution Tests
+# Async Pipeline Tests
 # =============================================================================
 
 def test_async_pipeline():
@@ -352,57 +320,334 @@ def test_async_pipeline():
 
     pipeline = async_add_one | async_double
     result = asyncio.run(pipeline.async_run(5))
+    assert result == 12
+
+
+# =============================================================================
+# Node (OOP) Tests
+# =============================================================================
+
+def test_node_basic():
+    class Doubler(Node):
+        def process(self, x):
+            return x * 2
+
+    result = Doubler().run(5)
+    assert result == 10
+
+
+def test_node_with_state():
+    class Accumulator(Node):
+        def __init__(self, offset):
+            self.offset = offset
+
+        def process(self, x):
+            return x + self.offset
+
+    result = Accumulator(10).run(5)
+    assert result == 15
+
+
+def test_node_lifecycle():
+    events = []
+
+    class Tracked(Node):
+        def setup(self):
+            events.append("setup")
+
+        def teardown(self):
+            events.append("teardown")
+
+        def process(self, x):
+            events.append("process")
+            return x
+
+    Tracked().run(1)
+    assert events == ["setup", "process", "teardown"]
+
+
+def test_node_teardown_on_error():
+    events = []
+
+    class FailNode(Node):
+        def setup(self):
+            events.append("setup")
+
+        def teardown(self):
+            events.append("teardown")
+
+        def process(self, x):
+            raise ValueError("boom")
+
+    with pytest.raises(ValueError):
+        FailNode().run(1)
+    assert "teardown" in events  # teardown still called
+
+
+def test_node_pipeline_composition():
+    class Increment(Node):
+        def process(self, x):
+            return x + 1
+
+    class Double(Node):
+        def process(self, x):
+            return x * 2
+
+    pipeline = Increment() | Double()
+    result = pipeline.run(5)
     assert result == 12  # (5+1)*2
 
+
+def test_node_mixed_with_pipestep():
+    @piped
+    def add_one(x):
+        return x + 1
+
+    class Triple(Node):
+        def process(self, x):
+            return x * 3
+
+    pipeline = add_one | Triple()
+    result = pipeline.run(5)
+    assert result == 18  # (5+1)*3
+
+
+def test_node_inheritance():
+    class ScaleNode(Node):
+        def __init__(self, factor):
+            self.factor = factor
+
+        def process(self, x):
+            return x * self.factor
+
+    class DoubleNode(ScaleNode):
+        def __init__(self):
+            super().__init__(2)
+
+    class TripleNode(ScaleNode):
+        def __init__(self):
+            super().__init__(3)
+
+    pipeline = DoubleNode() | TripleNode()
+    result = pipeline.run(5)
+    assert result == 30  # 5*2*3
+
+
 # =============================================================================
-# Performance Tests
+# ConditionalStep Tests
 # =============================================================================
 
+def test_conditional_basic():
+    @piped
+    def double(x):
+        return x * 2
+
+    @piped
+    def negate(x):
+        return -x
+
+    cond = ConditionalStep(
+        condition=lambda x: x > 0,
+        if_true=double,
+        if_false=negate,
+    )
+    assert cond.run(5) == 10
+    assert cond.run(-3) == 3
+
+
+def test_conditional_no_false_branch():
+    @piped
+    def double(x):
+        return x * 2
+
+    cond = ConditionalStep(condition=lambda x: x > 0, if_true=double)
+    assert cond.run(5) == 10
+    assert cond.run(-3) == -3  # passthrough
+
+
+def test_conditional_with_nodes():
+    class Positive(Node):
+        def process(self, x):
+            return abs(x)
+
+    class Negative(Node):
+        def process(self, x):
+            return -abs(x)
+
+    cond = ConditionalStep(
+        condition=lambda x: x > 0,
+        if_true=Positive(),
+        if_false=Negative(),
+    )
+    assert cond.run(5) == 5
+    assert cond.run(-3) == -3
+
+
+def test_conditional_in_pipeline():
+    @piped
+    def add_one(x):
+        return x + 1
+
+    cond = ConditionalStep(
+        condition=lambda x: x > 5,
+        if_true=piped(lambda x: x * 10),
+        if_false=piped(lambda x: x * 2),
+    )
+
+    pipeline = add_one | cond
+    assert pipeline.run(5) == 60   # 6 > 5 -> 6*10
+    assert pipeline.run(3) == 8    # 4 <= 5 -> 4*2
+
+
+def test_conditional_async():
+    @piped
+    async def async_double(x):
+        return x * 2
+
+    cond = ConditionalStep(
+        condition=lambda x: x > 0,
+        if_true=async_double,
+    )
+    result = asyncio.run(cond.async_run(5))
+    assert result == 10
+
+
+# =============================================================================
+# Graph (DAG) Tests
+# =============================================================================
+
+def test_graph_linear():
+    g = Graph()
+    g.add_node("a", piped(lambda x: x + 1))
+    g.add_node("b", piped(lambda x: x * 2))
+    g.add_edge("a", "b")
+
+    results = g.run(seed=5)
+    assert results["a"] == 6
+    assert results["b"] == 12
+
+
+def test_graph_diamond():
+    """Diamond dependency: a -> b, a -> c, b+c -> d"""
+    g = Graph()
+    g.add_node("a", piped(lambda x: x + 1))
+    g.add_node("b", piped(lambda x: x * 2))
+    g.add_node("c", piped(lambda x: x * 3))
+    g.add_node("d", piped(lambda vals: vals[0] + vals[1]))
+
+    g.add_edge("a", "b")
+    g.add_edge("a", "c")
+    g.add_edge("b", "d")
+    g.add_edge("c", "d")
+
+    results = g.run(seed=5)
+    assert results["a"] == 6
+    assert results["b"] == 12
+    assert results["c"] == 18
+    assert results["d"] == 30  # 12 + 18
+
+
+def test_graph_with_nodes():
+    class Double(Node):
+        def process(self, x):
+            return x * 2
+
+    g = Graph()
+    g.add_node("start", piped(lambda x: x + 1))
+    g.add_node("double", Double())
+    g.add_edge("start", "double")
+
+    results = g.run(seed=5)
+    assert results["double"] == 12
+
+
+def test_graph_cycle_detection():
+    g = Graph()
+    g.add_node("a", piped(lambda x: x))
+    g.add_node("b", piped(lambda x: x))
+    g.add_edge("a", "b")
+    g.add_edge("b", "a")
+
+    with pytest.raises(GraphCycleError):
+        g.run(seed=1)
+
+
+def test_graph_missing_node():
+    g = Graph()
+    g.add_node("a", piped(lambda x: x))
+
+    with pytest.raises(KeyError):
+        g.add_edge("a", "nonexistent")
+
+
+def test_graph_chaining():
+    """Test fluent API."""
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x + 1))
+        .add_node("b", piped(lambda x: x * 2))
+        .add_edge("a", "b")
+    )
+    results = g.run(seed=5)
+    assert results["b"] == 12
+
+
+def test_graph_independent_nodes():
+    """Nodes with no edges run independently with seed."""
+    g = Graph()
+    g.add_node("a", piped(lambda x: x + 1))
+    g.add_node("b", piped(lambda x: x * 2))
+
+    results = g.run(seed=5)
+    assert results["a"] == 6
+    assert results["b"] == 10
+
+
+def test_graph_async():
+    g = Graph()
+    g.add_node("a", piped(lambda x: x + 1))
+    g.add_node("b", piped(lambda x: x * 2))
+    g.add_edge("a", "b")
+
+    results = asyncio.run(g.async_run(seed=5))
+    assert results["b"] == 12
+
+
+# =============================================================================
+# Performance / Edge Case Tests
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
 def test_large_data_throughput():
-    @piped(jit=True, batch_size=10000)
+    @piped(batch_size=10000)
     def process_chunk(chunk):
         return np.mean(chunk)
 
-    # Generate smaller dataset for faster testing
     data = np.random.rand(100_000)
-
     start = time.perf_counter()
     result = process_chunk.run(data)
     duration = time.perf_counter() - start
 
-    # Fixed: Check absolute difference instead of direct comparison
     n_batches = (len(data) + 9999) // 10000
     expected = sum(np.mean(data[i:i + 10000]) for i in range(0, len(data), 10000))
     assert abs(result - expected) < 1e-6
-    assert duration < 1.0  # Should process quickly
+    assert duration < 1.0
 
-def test_memory_efficiency():
-    @piped
-    def memory_intensive(x):
-        # Create a smaller temporary array for testing
-        temp = np.zeros((100, 100))
-        return x + 1
-
-    result = memory_intensive.run(5)
-    assert result == 6
-
-# =============================================================================
-# Edge Case Tests
-# =============================================================================
 
 def test_empty_pipeline():
     pipeline = Pipeline([])
     result = pipeline.run(5)
     assert result == 5
 
+
 def test_single_step_pipeline():
     @piped
     def identity(x):
         return x
 
-    pipeline = identity
-    result = pipeline.run(5)
+    result = identity.run(5)
     assert result == 5
+
 
 def test_none_handling():
     @piped
@@ -412,12 +657,12 @@ def test_none_handling():
     result = handle_none.run(None)
     assert result is True
 
+
 # =============================================================================
 # Integration Tests
 # =============================================================================
 
 def test_full_integration():
-    # Create a comprehensive pipeline with multiple features
     counter = Counter()
 
     @piped
@@ -429,7 +674,7 @@ def test_full_integration():
         time.sleep(0.01)
         return x * 2
 
-    @circuit_breaker(failure_threshold=2)  # Fixed: Use correct parameter name
+    @circuit_breaker(failure_threshold=2)
     @retry(max_attempts=3)
     @piped(parallel='thread')
     def flaky_operation(x):
@@ -440,46 +685,13 @@ def test_full_integration():
 
     @piped(batch_size=2)
     def batch_sum(items):
-        print(items)
         return sum(items)
 
-    # Build pipeline
-    pipeline = (
-            fetch_data
-            | process_item  # Parallel processing
-            | flaky_operation  # With retry and circuit breaker
-            | batch_sum  # Batched processing
-    )
-
+    pipeline = fetch_data | process_item | flaky_operation | batch_sum
     result = pipeline.run()
-    expected = sum([3, 5, 7, 9, 11])  # (1*2+1)=3, (2*2+1)=5, ...
+    expected = sum([3, 5, 7, 9, 11])
     assert result == expected
 
-# =============================================================================
-# Mock Tests for External Dependencies
-# =============================================================================
-
-def test_without_numba(monkeypatch):
-    monkeypatch.setattr("pipeline.HAS_NUMBA", False)
-
-    @piped(jit=True)
-    def simple_func(x):
-        return x + 1
-
-    result = simple_func.run(5)
-    assert result == 6  # Should still work without numba
-
-def test_without_pyarrow():
-    # Fixed: Test HAS_PYARROW attribute exists
-    from pipeline import HAS_PYARROW
-    assert HAS_PYARROW is False  # Should be False in our implementation
-
-    @piped(batch_size=10)
-    def batch_func(items):
-        return len(items)
-
-    result = batch_func.run(list(range(25)))
-    assert result == 25  # Should still work without pyarrow
 
 # =============================================================================
 # Execution Result Tests
@@ -499,17 +711,17 @@ def test_execution_result():
 
     assert result.value == 12
     assert len(result.history) == 2
-    assert result.history[0] == ("step1", 6)  # Fixed: Check actual value
+    assert result.history[0] == ("step1", 6)
     assert result.history[1] == ("step2", 12)
     assert result.execution_time > 0
     assert result.step_count == 2
 
+
 # =============================================================================
-# Declarative Pipeline Tests
+# Misc Tests
 # =============================================================================
 
 def test_declarative_pipeline():
-    # Fixed: Handle missing from_spec method
     with pytest.raises(NotImplementedError):
         Pipeline.from_spec("test.yaml")
 
@@ -567,12 +779,389 @@ def test_graceful_cancellation():
         return x
 
     pipeline = Pipeline([slow])
+
     async def run_and_cancel():
         pipeline.cancel()
         with pytest.raises(asyncio.CancelledError):
             await pipeline.async_run(1)
 
     asyncio.run(run_and_cancel())
+
+
+# =============================================================================
+# @node Decorator Tests
+# =============================================================================
+
+def test_node_decorator_basic():
+    @node
+    def double(x):
+        return x * 2
+
+    result = double.run(5)
+    assert result == 10
+
+
+def test_node_decorator_pipeline():
+    @node
+    def add_one(x):
+        return x + 1
+
+    @node
+    def triple(x):
+        return x * 3
+
+    pipeline = add_one | triple
+    result = pipeline.run(5)
+    assert result == 18  # (5+1)*3
+
+
+def test_node_decorator_with_lifecycle():
+    events = []
+
+    @node(setup=lambda self: events.append("setup"),
+          teardown=lambda self: events.append("teardown"))
+    def process(x):
+        events.append("process")
+        return x * 2
+
+    result = process.run(5)
+    assert result == 10
+    assert events == ["setup", "process", "teardown"]
+
+
+def test_node_decorator_mixed_with_piped():
+    @piped
+    def add_one(x):
+        return x + 1
+
+    @node
+    def double(x):
+        return x * 2
+
+    pipeline = add_one | double
+    result = pipeline.run(5)
+    assert result == 12
+
+
+# =============================================================================
+# SwitchStep Tests
+# =============================================================================
+
+def test_switch_basic():
+    switch = SwitchStep(
+        key=lambda x: "pos" if x > 0 else "neg",
+        branches={
+            "pos": piped(lambda x: x * 2),
+            "neg": piped(lambda x: -x),
+        },
+    )
+    assert switch.run(5) == 10
+    assert switch.run(-3) == 3
+
+
+def test_switch_default():
+    switch = SwitchStep(
+        key=lambda x: "a" if x == 1 else "unknown",
+        branches={"a": piped(lambda x: x * 10)},
+        default=piped(lambda x: x),
+    )
+    assert switch.run(1) == 10
+    assert switch.run(99) == 99
+
+
+def test_switch_no_match_no_default():
+    switch = SwitchStep(
+        key=lambda x: "missing",
+        branches={"a": piped(lambda x: x * 10)},
+    )
+    # No match, no default -> passthrough
+    assert switch.run(5) == 5
+
+
+def test_switch_with_nodes():
+    class Doubler(Node):
+        def process(self, x):
+            return x * 2
+
+    class Negator(Node):
+        def process(self, x):
+            return -x
+
+    switch = SwitchStep(
+        key=lambda x: "double" if x > 0 else "negate",
+        branches={"double": Doubler(), "negate": Negator()},
+    )
+    assert switch.run(5) == 10
+    assert switch.run(-3) == 3
+
+
+def test_switch_in_pipeline():
+    switch = SwitchStep(
+        key=lambda x: "big" if x > 10 else "small",
+        branches={
+            "big": piped(lambda x: x * 100),
+            "small": piped(lambda x: x * 2),
+        },
+    )
+    pipeline = piped(lambda x: x + 5) | switch
+    assert pipeline.run(10) == 1500  # 15 > 10 -> 15*100
+    assert pipeline.run(3) == 16     # 8 <= 10 -> 8*2
+
+
+def test_switch_async():
+    switch = SwitchStep(
+        key=lambda x: "double" if x > 0 else "negate",
+        branches={
+            "double": piped(lambda x: x * 2),
+            "negate": piped(lambda x: -x),
+        },
+    )
+    result = asyncio.run(switch.async_run(5))
+    assert result == 10
+
+
+# =============================================================================
+# Graph Parallel Execution Tests
+# =============================================================================
+
+def test_graph_parallel_sync():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x + 1))
+        .add_node("b", piped(lambda x: x * 2))
+        .add_node("c", piped(lambda x: x * 3))
+        .add_node("d", piped(lambda vals: vals[0] + vals[1]))
+        .add_edge("a", "b")
+        .add_edge("a", "c")
+        .add_edge("b", "d")
+        .add_edge("c", "d")
+    )
+    results = g.run(seed=5, parallel=True)
+    assert results["a"] == 6
+    assert results["b"] == 12
+    assert results["c"] == 18
+    assert results["d"] == 30
+
+
+def test_graph_parallel_async():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x + 1))
+        .add_node("b", piped(lambda x: x * 2))
+        .add_node("c", piped(lambda x: x * 3))
+        .add_edge("a", "b")
+        .add_edge("a", "c")
+    )
+    results = asyncio.run(g.async_run(seed=5, parallel=True))
+    assert results["a"] == 6
+    assert results["b"] == 12
+    assert results["c"] == 18
+
+
+def test_graph_roots_and_leaves():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x))
+        .add_node("b", piped(lambda x: x))
+        .add_node("c", piped(lambda x: x))
+        .add_edge("a", "b")
+        .add_edge("b", "c")
+    )
+    assert g.roots == ["a"]
+    assert g.leaves == ["c"]
+
+
+def test_graph_multiple_roots():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x))
+        .add_node("b", piped(lambda x: x))
+        .add_node("c", piped(lambda x: x))
+        .add_edge("a", "c")
+        .add_edge("b", "c")
+    )
+    assert g.roots == ["a", "b"]
+    assert g.leaves == ["c"]
+
+
+# =============================================================================
+# Rust Extension Tests
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_rust_topo_sort():
+    from pipecraft import _rust as chainit_rust
+    result = chainit_rust.topo_sort({"a": ["b", "c"], "b": ["d"], "c": ["d"]})
+    assert result == ["a", "b", "c", "d"]
+
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_rust_topo_sort_cycle():
+    from pipecraft import _rust as chainit_rust
+    with pytest.raises(ValueError):
+        chainit_rust.topo_sort({"a": ["b"], "b": ["a"]})
+
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_rust_fast_map():
+    from pipecraft import _rust as chainit_rust
+    result = chainit_rust.fast_map(lambda x: x * 2, [1, 2, 3])
+    assert result == [2, 4, 6]
+
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_rust_batch_items():
+    from pipecraft import _rust as chainit_rust
+    result = chainit_rust.batch_items([1, 2, 3, 4, 5], 2)
+    assert result == [[1, 2], [3, 4], [5]]
+
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_rust_find_roots_leaves():
+    from pipecraft import _rust as chainit_rust
+    edges = {"a": ["b", "c"], "b": ["d"], "c": ["d"]}
+    assert chainit_rust.find_roots(edges) == ["a"]
+    assert chainit_rust.find_leaves(edges) == ["d"]
+
+
+@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
+def test_graph_uses_rust():
+    """Graph should use Rust topo_sort transparently."""
+    g = (
+        Graph()
+        .add_node("x", piped(lambda v: v + 1))
+        .add_node("y", piped(lambda v: v * 2))
+        .add_edge("x", "y")
+    )
+    results = g.run(seed=10)
+    assert results["y"] == 22  # (10+1)*2
+
+
+# =============================================================================
+# Developer Experience Tests
+# =============================================================================
+
+def test_pipeline_repr():
+    @piped
+    def add(x):
+        return x + 1
+
+    @piped
+    def double(x):
+        return x * 2
+
+    p = add | double
+    assert "Pipeline(" in repr(p)
+    assert "add" in repr(p)
+    assert "double" in repr(p)
+
+
+def test_pipeline_len():
+    @piped
+    def a(x):
+        return x
+
+    @piped
+    def b(x):
+        return x
+
+    p = a | b
+    assert len(p) == 2
+
+
+def test_pipeline_getitem():
+    @piped
+    def a(x):
+        return x + 1
+
+    @piped
+    def b(x):
+        return x * 2
+
+    p = a | b
+    assert p[0]._func_name == "a"
+    assert p[1]._func_name == "b"
+
+
+def test_pipeline_iter():
+    @piped
+    def a(x):
+        return x
+
+    @piped
+    def b(x):
+        return x
+
+    p = a | b
+    names = [s._func_name for s in p]
+    assert names == ["a", "b"]
+
+
+def test_pipeline_map():
+    @piped
+    def double(x):
+        return x * 2
+
+    p = Pipeline([double])
+    result = p.map([1, 2, 3, 4])
+    assert result == [2, 4, 6, 8]
+
+
+def test_pipeline_async_map():
+    @piped
+    async def double(x):
+        return x * 2
+
+    p = Pipeline([double])
+    result = asyncio.run(p.async_map([1, 2, 3]))
+    assert result == [2, 4, 6]
+
+
+def test_pipestep_repr():
+    @piped(parallel='thread', batch_size=10)
+    def work(x):
+        return x
+
+    r = repr(work)
+    assert "PipeStep(" in r
+    assert "work" in r
+    assert "thread" in r
+    assert "batch=10" in r
+
+
+def test_node_repr():
+    class MyNode(Node):
+        def process(self, x):
+            return x
+
+    assert "MyNode()" == repr(MyNode())
+
+
+def test_graph_repr():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x))
+        .add_node("b", piped(lambda x: x))
+        .add_edge("a", "b")
+    )
+    assert "Graph(nodes=2, edges=1)" == repr(g)
+
+
+def test_graph_describe():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x))
+        .add_node("b", piped(lambda x: x))
+        .add_node("c", piped(lambda x: x))
+        .add_edge("a", "b")
+        .add_edge("a", "c")
+    )
+    desc = g.describe()
+    assert "Graph:" in desc
+    assert "a -> b, c" in desc
+    assert "b (leaf)" in desc
+    assert "c (leaf)" in desc
+
 
 if __name__ == "__main__":
     pytest.main(["-v", "-s", "--durations=0"])

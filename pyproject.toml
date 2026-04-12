@@ -1,11 +1,49 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
 [project]
-name = "chainit"
+name = "pipecraft"
 version = "0.1.0"
-description = "Lightweight pipeline utilities with optional FFI acceleration"
+description = "Composable pipeline framework with graph/DAG support and optional Rust acceleration"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
-dependencies = ["numpy", "cffi", "maturin>=1"]
+authors = [
+    { name = "Amiya Mandal", email = "amiya19mandal@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+keywords = ["pipeline", "pipe", "dag", "graph", "workflow", "chain", "compose"]
+dependencies = []
+
+[project.optional-dependencies]
+numpy = ["numpy"]
+numba = ["numba"]
+all = ["numpy", "numba"]
+
+[project.urls]
+Homepage = "https://github.com/amiyamandal-dev/chainIt"
+Repository = "https://github.com/amiyamandal-dev/chainIt"
+Issues = "https://github.com/amiyamandal-dev/chainIt/issues"
+
+[tool.maturin]
+python-source = "src"
+module-name = "pipecraft._rust"
+manifest-path = "rust/Cargo.toml"
+features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "src"
+    "src",
 ]
