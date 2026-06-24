@@ -22,6 +22,11 @@ from .node import Node
 from .pipeline import Pipeline, PipelineBuilder
 from .pools import _POOLS, cleanup_pools
 from .result import ExecutionResult
+from .runtime import (
+    HAS_FREE_THREADING,
+    is_gil_enabled,
+    threads_provide_true_parallelism,
+)
 from .step import PipeStep
 
 __all__ = [
@@ -39,6 +44,7 @@ __all__ = [
     # Errors
     'PipelineError', 'RetryExhaustedError', 'CircuitBreakerError', 'GraphCycleError',
     # Utilities
-    'cleanup_pools', 'HAS_NUMPY', 'HAS_RSLOOP',
+    'cleanup_pools', 'HAS_NUMPY', 'HAS_RSLOOP', 'HAS_FREE_THREADING',
+    'is_gil_enabled', 'threads_provide_true_parallelism',
     'run_async', 'install_rsloop', 'uninstall_rsloop', 'rsloop_policy',
 ]

@@ -349,6 +349,56 @@ def test_process_parallel():
     assert results == [sum(i * i for i in range(n)) for n in numbers]
 
 
+def test_parallel_process_uses_threads_on_free_threading(monkeypatch):
+    """On 3.14+ free-threaded builds, process parallel maps to thread pools."""
+    import pipecraft.runtime as runtime
+
+    monkeypatch.setattr(runtime, "HAS_FREE_THREADING", True)
+    monkeypatch.setattr(runtime, "is_gil_enabled", lambda: False)
+
+    @piped(parallel='process')
+    def square(x):
+        return x * x
+
+    assert square.parallel == 'thread'
+    assert square.run([2, 3, 4]) == [4, 9, 16]
+
+
+def test_parallel_auto_prefers_threads_on_free_threading(monkeypatch):
+    import pipecraft.runtime as runtime
+
+    monkeypatch.setattr(runtime, "HAS_FREE_THREADING", True)
+    monkeypatch.setattr(runtime, "is_gil_enabled", lambda: False)
+
+    @piped(parallel='auto')
+    def double(x):
+        return x * 2
+
+    assert double.parallel == 'thread'
+
+
+def test_parallel_auto_uses_process_with_gil(monkeypatch):
+    import pipecraft.runtime as runtime
+
+    monkeypatch.setattr(runtime, "HAS_FREE_THREADING", False)
+    monkeypatch.setattr(runtime, "is_gil_enabled", lambda: True)
+
+    step = piped(parallel='auto')(_fanout_add_one)
+    assert step.parallel == 'process'
+
+
+def test_free_threading_runtime_api():
+    from pipecraft import (
+        HAS_FREE_THREADING,
+        is_gil_enabled,
+        threads_provide_true_parallelism,
+    )
+
+    assert isinstance(HAS_FREE_THREADING, bool)
+    assert isinstance(is_gil_enabled(), bool)
+    assert isinstance(threads_provide_true_parallelism(), bool)
+
+
 # =============================================================================
 # Batch Processing Tests
 # =============================================================================

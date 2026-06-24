@@ -11,6 +11,7 @@ from .config import CircuitBreakerConfig, CircuitState, RetryConfig
 from .constants import HAS_NUMPY, PIPE, R, T, logger, np
 from .exceptions import CircuitBreakerError, PipelineError, RetryExhaustedError
 from .pools import _get_pool
+from .runtime import resolve_parallel_kind
 from .utils import (
     _get_func_name,
     _is_auto_map_collection,
@@ -29,7 +30,7 @@ class PipeStep(Generic[T, R]):
 
     # Performance
     batch_size: int = 1
-    parallel: Optional[str] = None  # 'thread' or 'process'
+    parallel: Optional[str] = None  # 'thread', 'process', or 'auto'
 
     # Reliability
     retry_config: Optional[RetryConfig] = None
@@ -51,6 +52,9 @@ class PipeStep(Generic[T, R]):
     def __post_init__(self):
         object.__setattr__(self, '_func_name', _get_func_name(self.func))
         object.__setattr__(self, '_is_async', inspect.iscoroutinefunction(self.func))
+        parallel = resolve_parallel_kind(self.parallel)
+        if parallel != self.parallel:
+            object.__setattr__(self, 'parallel', parallel)
         object.__setattr__(
             self, '_is_pickleable',
             _is_pickleable(self.func) if self.parallel == 'process' else True,

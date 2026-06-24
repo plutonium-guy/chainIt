@@ -8,6 +8,7 @@ from typing import Any, Callable, Generic, Iterable, List, Optional, Tuple
 
 from .constants import R, T
 from .pools import _get_pool
+from .runtime import resolve_parallel_kind
 
 
 def _run_branch_on(branch: Any, value: Any) -> Any:
@@ -21,6 +22,11 @@ class FanOutStep(Generic[T, R]):
 
     branches: Tuple[Any, ...]
     parallel: Optional[str] = None
+
+    def __post_init__(self):
+        parallel = resolve_parallel_kind(self.parallel)
+        if parallel != self.parallel:
+            object.__setattr__(self, 'parallel', parallel)
 
     def run(self, value: T) -> Tuple[R, ...]:
         if self.parallel:
