@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable, Optional, Tuple, Union
 
 from .config import CircuitBreakerConfig, RetryConfig
-from .constants import HAS_NUMPY, np
+from .constants import HAS_NUMPY, logger, np
 from .node import Node
 from .step import PipeStep
 from .utils import _get_func_name
@@ -29,18 +29,32 @@ def piped(
                 import numba
                 optimized = numba.njit(fastmath=True, cache=True, nogil=True)(optimized)
             except ImportError:
-                pass
+                logger.warning(
+                    "jit=True on %s but numba is not installed; running without JIT. "
+                    "Install with: pip install pipecraft[numba]",
+                    _get_func_name(f),
+                )
 
         if vectorize:
+            vectorized = False
             try:
                 import numba
                 optimized = numba.vectorize(
                     ['float64(float64)', 'float32(float32)', 'int64(int64)'],
                     nopython=True, cache=True,
                 )(optimized)
+                vectorized = True
             except ImportError:
                 if HAS_NUMPY:
                     optimized = np.vectorize(optimized, cache=True)
+                    vectorized = True
+            if not vectorized:
+                logger.warning(
+                    "vectorize=True on %s but neither numba nor numpy is available; "
+                    "running without vectorization. "
+                    "Install with: pip install pipecraft[numba] or pipecraft[numpy]",
+                    _get_func_name(f),
+                )
 
         return PipeStep(
             func=optimized,

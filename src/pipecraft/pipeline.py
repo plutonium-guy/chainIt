@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Generic, Iterable, List, Sequence
+from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence
 
 from .constants import R, T
 from .pools import cleanup_pools
@@ -137,5 +137,13 @@ class Pipeline(Generic[T, R]):
         return _run_async(self.async_map(items))
 
     @classmethod
-    def from_spec(cls, spec_file: str) -> 'Pipeline':
-        raise NotImplementedError("from_spec not implemented in this version")
+    def from_spec(
+        cls,
+        spec_file: str,
+        *,
+        registry: Optional[dict] = None,
+    ) -> 'Pipeline':
+        """Build a pipeline from a YAML or JSON spec file."""
+        from .spec import load_pipeline_from_spec
+
+        return load_pipeline_from_spec(spec_file, registry)

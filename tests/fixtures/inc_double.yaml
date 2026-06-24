@@ -1,0 +1,3 @@
+steps:
+  - import: tests.spec_fixtures:inc
+  - import: tests.spec_fixtures:double

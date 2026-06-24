@@ -1,6 +1,8 @@
 import pytest
 import time
 import asyncio
+import logging
+from pathlib import Path
 from pipeline import (
     PIPE, Pipeline, piped, retry, circuit_breaker,
     FanOutStep, FanInStep, PipelineError, ExecutionResult,
@@ -21,6 +23,9 @@ except ImportError:
 # =============================================================================
 # Test Utilities
 # =============================================================================
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
 
 class MockException(Exception):
     pass
@@ -264,6 +269,44 @@ def test_jit_compilation():
     result = sum_squares.run(100)
     expected = sum(i ** 2 for i in range(100))
     assert result == expected
+
+
+def test_jit_warns_without_numba(caplog, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "numba":
+            raise ImportError("no numba")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with caplog.at_level(logging.WARNING, logger="pipecraft.constants"):
+        step = piped(jit=True)(lambda x: x + 1)
+        assert step.run(2) == 3
+    assert any("numba" in r.message.lower() for r in caplog.records)
+
+
+def test_vectorize_warns_without_numba_or_numpy(caplog, monkeypatch):
+    import builtins
+    import pipecraft.decorators as dec
+
+    monkeypatch.setattr(dec, "HAS_NUMPY", False)
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "numba":
+            raise ImportError("no numba")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with caplog.at_level(logging.WARNING, logger="pipecraft.constants"):
+        step = piped(vectorize=True)(lambda x: x * 2)
+        assert step.run(3) == 6
+    assert any("vectorize" in r.message.lower() for r in caplog.records)
 
 
 @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
@@ -812,9 +855,31 @@ def test_execution_result():
 # Misc Tests
 # =============================================================================
 
-def test_declarative_pipeline():
-    with pytest.raises(NotImplementedError):
-        Pipeline.from_spec("test.yaml")
+def test_declarative_pipeline_yaml():
+    pipeline = Pipeline.from_spec(str(FIXTURES / "inc_double.yaml"))
+    assert pipeline.run(5) == 12
+
+
+def test_declarative_pipeline_json():
+    pipeline = Pipeline.from_spec(str(FIXTURES / "inc_double.json"))
+    assert pipeline.run(5) == 12
+
+
+def test_declarative_pipeline_registry(tmp_path):
+    spec = tmp_path / "pipe.yaml"
+    spec.write_text(
+        "steps:\n"
+        "  - import: custom:inc\n"
+        "  - import: tests.spec_fixtures:double\n"
+    )
+    registry = {"custom:inc": piped(lambda x: x + 10)}
+    pipeline = Pipeline.from_spec(str(spec), registry=registry)
+    assert pipeline.run(5) == 30
+
+
+def test_declarative_pipeline_missing_file():
+    with pytest.raises(FileNotFoundError):
+        Pipeline.from_spec("missing.yaml")
 
 
 def test_builder_dsl():
@@ -1393,6 +1458,53 @@ def test_fanout_process_parallel():
     branch2 = piped(_fanout_times_two)
     fan_out = FanOutStep((branch1, branch2), parallel='process')
     assert fan_out.run(5) == (6, 10)
+
+
+def test_fanout_async_parallel_thread():
+    """AUDIT: FanOutStep.async_run honors parallel='thread'."""
+    branch1 = piped(_fanout_add_one)
+    branch2 = piped(_fanout_times_two)
+    fan_out = FanOutStep((branch1, branch2), parallel='thread')
+    result = asyncio.run(fan_out.async_run(5))
+    assert result == (6, 10)
+
+
+def test_fanout_async_parallel_process():
+    branch1 = piped(_fanout_add_one)
+    branch2 = piped(_fanout_times_two)
+    fan_out = FanOutStep((branch1, branch2), parallel='process')
+    result = asyncio.run(fan_out.async_run(5))
+    assert result == (6, 10)
+
+
+def test_mapreduce_async_mapper_parallel():
+    """AUDIT: MapReduceStep.async_run maps batch items concurrently."""
+    delays = []
+
+    async def mapper(x):
+        delays.append(x)
+        await asyncio.sleep(0.02)
+        return x * 2
+
+    step = MapReduceStep(mapper=mapper, reducer=sum, batch_size=4)
+    start = time.perf_counter()
+    result = asyncio.run(step.async_run(range(4)))
+    elapsed = time.perf_counter() - start
+
+    assert result == sum(x * 2 for x in range(4))
+    assert elapsed < 0.08  # parallel ~20ms, sequential would be ~80ms
+
+
+def test_mapreduce_async_reducer_coroutine():
+    async def mapper(x):
+        return x * 2
+
+    async def reducer(values):
+        return sum(values)
+
+    step = MapReduceStep(mapper=mapper, reducer=reducer)
+    result = asyncio.run(step.async_run([1, 2, 3]))
+    assert result == 12
 
 
 def test_pipeline_shim_reexports():

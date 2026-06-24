@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Iterable, List, Optional, Tuple
 
 from .constants import R, T
@@ -30,6 +31,15 @@ class FanOutStep(Generic[T, R]):
         return tuple(branch.run(value) for branch in self.branches)
 
     async def async_run(self, value: T) -> Tuple[R, ...]:
+        if self.parallel:
+            pool = _get_pool(self.parallel)
+            loop = asyncio.get_running_loop()
+            tasks = [
+                loop.run_in_executor(pool, _run_branch_on, branch, value)
+                for branch in self.branches
+            ]
+            return tuple(await asyncio.gather(*tasks))
+
         tasks = []
         for branch in self.branches:
             if hasattr(branch, 'async_run'):
@@ -79,6 +89,23 @@ class MapReduceStep(Generic[T, R]):
     mapper: Callable[[T], Any]
     reducer: Callable[[Iterable[Any]], R]
     batch_size: int = 1
+    _mapper_is_async: bool = field(default=False, init=False)
+
+    def __post_init__(self):
+        object.__setattr__(
+            self, '_mapper_is_async', inspect.iscoroutinefunction(self.mapper),
+        )
+
+    async def _map_item(self, item: T) -> Any:
+        if self._mapper_is_async:
+            return await self.mapper(item)
+        result = self.mapper(item)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    async def _map_batch(self, batch: List[T]) -> List[Any]:
+        return list(await asyncio.gather(*(self._map_item(x) for x in batch)))
 
     def run(self, items: Iterable[T]) -> R:
         results: List[Any] = []
@@ -98,16 +125,10 @@ class MapReduceStep(Generic[T, R]):
         for item in items:
             batch.append(item)
             if len(batch) == self.batch_size:
-                mapped = [self.mapper(x) for x in batch]
-                results.extend(
-                    [await r if asyncio.iscoroutine(r) else r for r in mapped]
-                )
+                results.extend(await self._map_batch(batch))
                 batch.clear()
         if batch:
-            mapped = [self.mapper(x) for x in batch]
-            results.extend(
-                [await r if asyncio.iscoroutine(r) else r for r in mapped]
-            )
+            results.extend(await self._map_batch(batch))
         out = self.reducer(results)
         if asyncio.iscoroutine(out):
             return await out
