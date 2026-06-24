@@ -1227,6 +1227,26 @@ def test_batched_does_not_sum_booleans():
     assert result == [True, True, False]
 
 
+def test_async_batched_awaits_coroutines():
+    """AUDIT bug 1: async @piped with batch_size must await each batch."""
+    @piped(batch_size=2)
+    async def process_batch(batch):
+        return [x * 2 for x in batch]
+
+    result = asyncio.run(process_batch.async_run([1, 2, 3, 4]))
+    assert result == [2, 4, 6, 8]
+
+
+def test_async_batched_sync_func_in_executor():
+    """AUDIT bug 1: sync func with batch_size on async_run uses executor."""
+    @piped(batch_size=2)
+    def batch_double(batch):
+        return [x * 2 for x in batch]
+
+    result = asyncio.run(batch_double.async_run([1, 2, 3, 4]))
+    assert result == [2, 4, 6, 8]
+
+
 @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
 def test_batched_recognizes_numpy_scalars():
     """BUG 6: numpy scalar results from batches are recognized as numeric and

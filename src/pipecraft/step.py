@@ -225,7 +225,7 @@ class PipeStep(Generic[T, R]):
         if self.parallel and self._should_parallelize(args):
             return await self._execute_parallel_async(args, kwargs)
         if self.batch_size > 1 and self._should_batch(args):
-            return self._execute_batched(args, kwargs)
+            return await self._execute_batched_async(args, kwargs)
         if self._is_async:
             return await self.func(*args, **kwargs)
         loop = asyncio.get_running_loop()
@@ -260,6 +260,26 @@ class PipeStep(Generic[T, R]):
             batch = items[i:i + self.batch_size]
             result = self.func(batch, **kwargs)
             results.append(result)
+        return self._aggregate_batch_results(results)
+
+    async def _execute_batched_async(
+        self, args: Tuple[Any, ...], kwargs: Dict[str, Any],
+    ) -> Any:
+        items = args[0]
+        results = []
+        for i in range(0, len(items), self.batch_size):
+            batch = items[i:i + self.batch_size]
+            if self._is_async:
+                result = await self.func(batch, **kwargs)
+            else:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, functools.partial(self.func, batch, **kwargs),
+                )
+            results.append(result)
+        return self._aggregate_batch_results(results)
+
+    def _aggregate_batch_results(self, results: list) -> Any:
         if not results:
             return []
         if isinstance(results[0], (list, tuple)):
