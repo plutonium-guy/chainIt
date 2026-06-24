@@ -14,8 +14,8 @@ High-effort multi-agent review. 40 candidates → 29 confirmed. Ranked most-seve
 
 ## API + packaging regressions
 
-- [ ] **`piped()` dropped `cffi=`/`pyo3=` kwargs** — `src/pipecraft/__init__.py:1099`
-- [ ] **Removed from `__all__`: `FrozenDict`, `HAS_CFFI`, `HAS_PYO3`, `HAS_PYARROW`** — `src/pipecraft/__init__.py:1231`
+- [x] **`piped()` dropped `cffi=`/`pyo3=` kwargs** — intentional: pure-Python only; no Rust/CFFI/PyO3.
+- [x] **Removed from `__all__`: `FrozenDict`, `HAS_CFFI`, `HAS_PYO3`, `HAS_PYARROW`** — intentional: not part of the pure-Python API.
 - [x] **`_execute_batched` numeric narrowed `(int,float,np.number)`→`(int,float)`** — fixed: numeric tuple includes `np.number` when `HAS_NUMPY`, bool excluded. Test `test_batched_recognizes_numpy_scalars` (skips, no numpy here).
 - [x] **pytest `pythonpath=['src']` but `pipeline.py` moved src→root** — fixed: added `"."` to `pythonpath`. Test `test_pipeline_shim_reexports`.
 - [x] **CI `test-pure-python` uses maturin backend, never switches** — `.github/workflows/ci.yml:63` → CI now pure-Python (hatchling), Rust steps removed.
@@ -24,9 +24,9 @@ High-effort multi-agent review. 40 candidates → 29 confirmed. Ranked most-seve
 ## Performance
 
 - [x] **Topo fallback `queue.pop(0)` = O(n) per pop** — fixed: now `deque` + `popleft()`.
-- [ ] **`ThreadPoolExecutor` created per invocation AND per retry** — `src/pipecraft/__init__.py:276`
-- [ ] **`_is_pickleable` does `pickle.dumps(whole_func)` + `import pickle` inside call** — `src/pipecraft/__init__.py:124`
-- [ ] **`edge_dict` rebuilt 3x + topo re-run uncached** — `src/pipecraft/__init__.py:937,945,952,975`
+- [x] **`ThreadPoolExecutor` created per invocation AND per retry** — fixed: shared `_get_pool('thread')` for timeouts.
+- [x] **`_is_pickleable` does `pickle.dumps(whole_func)` + `import pickle` inside call** — fixed: module-level `pickle` import; check runs once in `__post_init__` for process pools.
+- [x] **`edge_dict` rebuilt 3x + topo re-run uncached** — fixed: Rust `edge_dict` removed; `_topo_order` / `_topo_levels_cache` cached until graph mutation.
 - [x] **Rust `fast_map` sequential under GIL + `fast_map`/`batch_items` never called** — Rust dependency removed entirely.
 
 ## Hygiene
@@ -36,8 +36,8 @@ High-effort multi-agent review. 40 candidates → 29 confirmed. Ranked most-seve
 
 ## Cleanup (verified dup, low priority)
 
-- [ ] **`_execute_sync`/`_execute_async` duplicate breaker+retry+schema logic** — `src/pipecraft/__init__.py:262,312`
-- [ ] **`_run_branch`/`_async_run_branch` byte-identical in `ConditionalStep`+`SwitchStep`** — `src/pipecraft/__init__.py:572,854` → extract mixin.
+- [x] **`_execute_sync`/`_execute_async` duplicate breaker+retry+schema logic** — fixed: shared `_preflight_check`, `_record_and_raise`, `_finalize_success`, `_should_retry`.
+- [x] **`_run_branch`/`_async_run_branch` byte-identical in `ConditionalStep`+`SwitchStep`** — fixed: module-level `_run_branch_value` / `_async_run_branch_value`.
 
 ---
 **Do now:** #7 (process fan-out crash), #1 (breaker logic), pytest+CI (rows 11–12).

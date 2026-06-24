@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import Any, Generic, Iterable, List, Sequence
+
+from .constants import R, T
+from .pools import cleanup_pools
+from .result import ExecutionResult
+
+
+class PipelineBuilder(Generic[T]):
+    """Fluent builder for Pipeline construction."""
+
+    def __init__(self):
+        self._steps: List[Any] = []
+
+    def add(self, step) -> 'PipelineBuilder[T]':
+        self._steps.append(step)
+        return self
+
+    def build(self) -> 'Pipeline':
+        from .pipeline import Pipeline
+        return Pipeline(self._steps)
+
+
+class Pipeline(Generic[T, R]):
+    """Linear pipeline with advanced execution modes."""
+
+    __slots__ = ('steps', '_cancel_event')
+
+    def __init__(self, steps: Sequence[Any]):
+        self.steps = tuple(steps)
+        self._cancel_event = None
+
+    def __or__(self, other) -> 'Pipeline[T, R]':
+        if isinstance(other, Pipeline):
+            return Pipeline([*self.steps, *other.steps])
+        return Pipeline([*self.steps, other])
+
+    def __call__(self, seed: Any = None) -> R:
+        return self.run(seed)
+
+    def __repr__(self) -> str:
+        step_names = []
+        for s in self.steps:
+            name = getattr(s, '_func_name', None) or type(s).__name__
+            step_names.append(name)
+        return f"Pipeline({' | '.join(step_names)})"
+
+    def __len__(self) -> int:
+        return len(self.steps)
+
+    def __getitem__(self, index):
+        return self.steps[index]
+
+    def __iter__(self):
+        return iter(self.steps)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        cleanup_pools()
+
+    def _ensure_cancel_event(self) -> asyncio.Event:
+        if self._cancel_event is None:
+            self._cancel_event = asyncio.Event()
+        return self._cancel_event
+
+    def cancel(self) -> None:
+        self._ensure_cancel_event().set()
+
+    def _is_cancelled(self) -> bool:
+        return self._cancel_event is not None and self._cancel_event.is_set()
+
+    def run(self, seed: Any = None) -> R:
+        value = seed
+        for step in self.steps:
+            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
+                object.__setattr__(step, '_cancel_event', self._cancel_event)
+            if self._is_cancelled():
+                raise asyncio.CancelledError()
+            value = step.run(value)
+        return value
+
+    async def async_run(self, seed: Any = None) -> R:
+        value = seed
+        for step in self.steps:
+            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
+                object.__setattr__(step, '_cancel_event', self._cancel_event)
+            if self._is_cancelled():
+                raise asyncio.CancelledError()
+            if hasattr(step, 'async_run'):
+                value = await step.async_run(value)
+            else:
+                value = step.run(value)
+        return value
+
+    def run_detailed(self, seed: Any = None) -> ExecutionResult[R]:
+        history = []
+        value = seed
+        start_time = time.perf_counter()
+        for step in self.steps:
+            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
+                object.__setattr__(step, '_cancel_event', self._cancel_event)
+            if self._is_cancelled():
+                raise asyncio.CancelledError()
+            value = step.run(value)
+            name = getattr(step, '_func_name', type(step).__name__)
+            history.append((name, value))
+        execution_time = time.perf_counter() - start_time
+        return ExecutionResult(
+            value=value,
+            history=tuple(history),
+            dt=execution_time,
+            n=len(self.steps),
+        )
+
+    def map(self, items: Iterable[Any]) -> List[Any]:
+        """Apply pipeline to each item in a collection."""
+        return [self.run(item) for item in items]
+
+    async def async_map(self, items: Iterable[Any]) -> List[Any]:
+        """Apply pipeline to each item asynchronously."""
+        tasks = [self.async_run(item) for item in items]
+        return list(await asyncio.gather(*tasks))
+
+    def run_async(self, seed: Any = None) -> R:
+        """Run the pipeline asynchronously using rsloop when available."""
+        from .async_runtime import run_async as _run_async
+        return _run_async(self.async_run(seed))
+
+    def map_async(self, items: Iterable[Any]) -> List[Any]:
+        """Apply pipeline to each item via the async runtime (rsloop when available)."""
+        from .async_runtime import run_async as _run_async
+        return _run_async(self.async_map(items))
+
+    @classmethod
+    def from_spec(cls, spec_file: str) -> 'Pipeline':
+        raise NotImplementedError("from_spec not implemented in this version")

@@ -26,7 +26,8 @@ For optional dependencies:
 
 ```bash
 pip install pipecraft[numpy]    # numpy support
-pip install pipecraft[all]      # numpy + numba JIT
+pip install pipecraft[rsloop]   # fast Rust asyncio event loop
+pip install pipecraft[all]      # numpy + numba + rsloop
 ```
 
 ## Features
@@ -214,10 +215,14 @@ def call_api(data):
 
 ### Async
 
-Every component supports async:
+Every component supports async. For better performance, install [rsloop](https://github.com/RustedBytes/rsloop) (Rust asyncio event loop):
+
+```bash
+pip install pipecraft[rsloop]
+```
 
 ```python
-import asyncio
+from pipecraft import piped, run_async
 
 @piped
 async def fetch(url):
@@ -225,10 +230,22 @@ async def fetch(url):
         return await (await s.get(url)).json()
 
 pipeline = fetch | process | save
-result = asyncio.run(pipeline.async_run("https://api.example.com"))
 
-# Parallel map
-results = asyncio.run(pipeline.async_map(urls))
+# Uses rsloop when installed, falls back to asyncio.run otherwise
+result = pipeline.run_async("https://api.example.com")
+results = pipeline.map_async(urls)
+
+# Or run any coroutine directly
+result = run_async(pipeline.async_run("https://api.example.com"))
+```
+
+You can also install rsloop as the default event loop policy:
+
+```python
+from pipecraft import rsloop_policy
+
+with rsloop_policy():
+    result = run_async(pipeline.async_run(seed))
 ```
 
 ## API Reference
@@ -247,6 +264,10 @@ results = asyncio.run(pipeline.async_map(urls))
 | `FanOutStep` | Broadcast to parallel branches |
 | `FanInStep` | Merge branch outputs |
 | `MapReduceStep` | Batched map-reduce |
+| `run_async(coro)` | Run coroutine via rsloop (or asyncio fallback) |
+| `pipeline.run_async(seed)` | Sync wrapper around `async_run` |
+| `pipeline.map_async(items)` | Sync wrapper around `async_map` |
+| `Graph.run_async(seed)` | Sync wrapper around graph `async_run` |
 | `ExecutionResult` | Detailed run result (value, history, timing) |
 
 ### Pipeline Methods
@@ -254,9 +275,11 @@ results = asyncio.run(pipeline.async_map(urls))
 ```python
 pipeline.run(seed)           # Execute synchronously
 pipeline.async_run(seed)     # Execute asynchronously
+pipeline.run_async(seed)     # async_run via rsloop (when installed)
 pipeline.run_detailed(seed)  # Execute with timing/history
 pipeline.map(items)          # Apply to each item
 pipeline.async_map(items)    # Apply to each item (async)
+pipeline.map_async(items)    # async_map via rsloop (when installed)
 pipeline.cancel()            # Cancel running pipeline
 len(pipeline)                # Number of steps
 pipeline[0]                  # Access step by index

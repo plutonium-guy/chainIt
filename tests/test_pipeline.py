@@ -6,6 +6,7 @@ from pipeline import (
     FanOutStep, FanInStep, PipelineError, ExecutionResult,
     PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
     SwitchStep, Graph, GraphCycleError,
+    HAS_RSLOOP, run_async, install_rsloop, uninstall_rsloop, rsloop_policy,
 )
 
 # Try numpy — skip tests that need it if missing
@@ -1273,6 +1274,79 @@ def test_pipeline_shim_reexports():
         "SwitchStep", "Graph", "GraphCycleError", "_POOLS",
     ):
         assert hasattr(pipeline, name), f"pipeline shim missing {name}"
+
+
+# =============================================================================
+# rsloop async runtime
+# =============================================================================
+
+def test_run_async_fallback_without_rsloop(monkeypatch):
+    """run_async falls back to asyncio.run when rsloop is unavailable."""
+    import pipecraft.async_runtime as ar
+
+    monkeypatch.setattr(ar, "HAS_RSLOOP", False)
+
+    async def coro():
+        return 7
+
+    assert ar.run_async(coro()) == 7
+
+
+@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+def test_run_async_with_rsloop():
+    async def coro():
+        await asyncio.sleep(0.01)
+        return 99
+
+    assert run_async(coro()) == 99
+
+
+@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+def test_pipeline_run_async():
+    @piped
+    async def add_one(x):
+        await asyncio.sleep(0.01)
+        return x + 1
+
+    @piped
+    async def double(x):
+        return x * 2
+
+    pipeline = add_one | double
+    assert pipeline.run_async(5) == 12
+
+
+@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+def test_pipeline_map_async():
+    @piped
+    async def double(x):
+        return x * 2
+
+    p = Pipeline([double])
+    assert p.map_async([1, 2, 3]) == [2, 4, 6]
+
+
+@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+def test_graph_run_async():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x + 1))
+        .add_node("b", piped(lambda x: x * 2))
+        .add_edge("a", "b")
+    )
+    results = g.run_async(seed=5)
+    assert results["a"] == 6
+    assert results["b"] == 12
+
+
+@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+def test_rsloop_policy_context():
+    async def coro():
+        return asyncio.get_running_loop().__class__.__module__.startswith("rsloop")
+
+    with rsloop_policy():
+        assert run_async(coro()) is True
+    uninstall_rsloop()
 
 
 if __name__ == "__main__":

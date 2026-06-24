@@ -29,7 +29,8 @@ dependencies = []
 [project.optional-dependencies]
 numpy = ["numpy"]
 numba = ["numba"]
-all = ["numpy", "numba"]
+rsloop = ["rsloop"]
+all = ["numpy", "numba", "rsloop"]
 
 [project.urls]
 Homepage = "https://github.com/amiyamandal-dev/chainIt"
