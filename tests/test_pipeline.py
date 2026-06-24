@@ -513,6 +513,36 @@ def test_conditional_async():
     assert result == 10
 
 
+class _RunReturnsCoroutine:
+    """Custom branch with only run() that returns a coroutine (no async_run)."""
+
+    def run(self, value):
+        async def _work():
+            return value * 2
+
+        return _work()
+
+
+def test_conditional_async_run_branch_sync_run_coroutine():
+    """AUDIT bug 3: async path must await coroutines from branch.run()."""
+    cond = ConditionalStep(
+        condition=lambda x: x > 0,
+        if_true=_RunReturnsCoroutine(),
+    )
+    result = asyncio.run(cond.async_run(5))
+    assert result == 10
+
+
+def test_switch_async_run_branch_sync_run_coroutine():
+    """AUDIT bug 3: SwitchStep async path must await coroutines from branch.run()."""
+    switch = SwitchStep(
+        key=lambda x: "go",
+        branches={"go": _RunReturnsCoroutine()},
+    )
+    result = asyncio.run(switch.async_run(5))
+    assert result == 10
+
+
 # =============================================================================
 # Graph (DAG) Tests
 # =============================================================================

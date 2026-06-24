@@ -35,7 +35,10 @@ async def _async_run_branch_value(branch: Any, value: Any) -> Any:
     if hasattr(branch, 'async_run'):
         return await branch.async_run(value)
     if hasattr(branch, 'run'):
-        return branch.run(value)
+        result = branch.run(value)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
     result = branch(value)
     if asyncio.iscoroutine(result):
         return await result
