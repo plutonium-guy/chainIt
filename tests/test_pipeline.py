@@ -1247,6 +1247,27 @@ def test_async_batched_sync_func_in_executor():
     assert result == [2, 4, 6, 8]
 
 
+def test_async_parallel_thread_awaits_coroutines():
+    """AUDIT bug 2: async @piped with parallel must await each item."""
+    @piped(parallel='thread')
+    async def double(x):
+        return x * 2
+
+    result = asyncio.run(double.async_run([1, 2, 3]))
+    assert result == [2, 4, 6]
+
+
+def test_async_parallel_forwards_kwargs():
+    """AUDIT bug 2: async parallel path must forward keyword args."""
+    @piped(parallel='thread')
+    async def add(x, *, offset=0):
+        return x + offset
+
+    bound = add(PIPE, offset=100)
+    result = asyncio.run(bound.async_run([1, 2, 3]))
+    assert result == [101, 102, 103]
+
+
 @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
 def test_batched_recognizes_numpy_scalars():
     """BUG 6: numpy scalar results from batches are recognized as numeric and
