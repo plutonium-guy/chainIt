@@ -31,6 +31,7 @@ class PipeStep(Generic[T, R]):
     # Performance
     batch_size: int = 1
     parallel: Optional[str] = None  # 'thread', 'process', or 'auto'
+    auto_map: bool = True
 
     # Reliability
     retry_config: Optional[RetryConfig] = None
@@ -121,11 +122,29 @@ class PipeStep(Generic[T, R]):
             _kwargs=merged_kwargs,
             batch_size=self.batch_size,
             parallel=self.parallel,
+            auto_map=self.auto_map,
             retry_config=self.retry_config,
             circuit_config=self.circuit_config,
             timeout=self.timeout,
             schema=self.schema,
         )
+
+    def copy(self, **overrides: Any) -> 'PipeStep[T, R]':
+        """Return a new step with fresh breaker state (for decorators / reuse)."""
+        fields = {
+            'func': self.func,
+            '_args': self._args,
+            '_kwargs': self._kwargs,
+            'batch_size': self.batch_size,
+            'parallel': self.parallel,
+            'auto_map': self.auto_map,
+            'retry_config': self.retry_config,
+            'circuit_config': self.circuit_config,
+            'timeout': self.timeout,
+            'schema': self.schema,
+        }
+        fields.update(overrides)
+        return PipeStep(**fields)
 
     def run(self, input_value: Any = PIPE) -> R:
         return self._execute_sync(input_value)
@@ -253,7 +272,8 @@ class PipeStep(Generic[T, R]):
 
     def _should_auto_map(self, args: Tuple[Any, ...]) -> bool:
         return (
-            self.parallel is None
+            self.auto_map
+            and self.parallel is None
             and self.batch_size == 1
             and len(args) == 1
             and _is_auto_map_collection(args[0])

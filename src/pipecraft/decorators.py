@@ -14,6 +14,7 @@ def piped(
     *,
     batch_size: int = 1,
     parallel: Optional[str] = None,
+    auto_map: bool = True,
     timeout: Optional[float] = None,
     schema: Optional[type] = None,
     jit: bool = False,
@@ -60,6 +61,7 @@ def piped(
             func=optimized,
             batch_size=batch_size,
             parallel=parallel,
+            auto_map=auto_map,
             timeout=timeout,
             schema=schema,
         )
@@ -77,10 +79,11 @@ def retry(
     """Add retry capability to a pipeline step."""
 
     def decorator(step: PipeStep) -> PipeStep:
-        step.retry_config = RetryConfig(
-            attempts=max_attempts, delay=delay, backoff=backoff, errors=errors
+        return step.copy(
+            retry_config=RetryConfig(
+                attempts=max_attempts, delay=delay, backoff=backoff, errors=errors,
+            ),
         )
-        return step
 
     return decorator
 
@@ -99,8 +102,9 @@ def circuit_breaker(
         timeout = recovery_timeout
 
     def decorator(step: PipeStep) -> PipeStep:
-        step.circuit_config = CircuitBreakerConfig(threshold=threshold, timeout=timeout)
-        return step
+        return step.copy(
+            circuit_config=CircuitBreakerConfig(threshold=threshold, timeout=timeout),
+        )
 
     return decorator
 

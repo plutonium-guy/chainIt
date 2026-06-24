@@ -137,6 +137,34 @@ def test_auto_map_respects_batch_and_parallel():
     assert slow_square.run([2, 3]) == [4, 9]
 
 
+def test_auto_map_can_be_disabled():
+    @piped(auto_map=False)
+    def length(xs):
+        return len(xs)
+
+    assert length.run([1, 2, 3]) == 3
+
+
+def test_circuit_breaker_decorated_copies_are_independent():
+    @piped
+    def faulty(x):
+        raise MockException("fail")
+
+    a = circuit_breaker(failure_threshold=2)(faulty)
+    b = circuit_breaker(failure_threshold=2)(faulty)
+    assert a is not b
+
+    with pytest.raises(PipelineError):
+        a.run(1)
+    with pytest.raises(PipelineError):
+        a.run(2)
+    with pytest.raises(PipelineError):
+        a.run(3)  # open — short-circuited
+
+    with pytest.raises(PipelineError):
+        b.run(1)  # independent breaker still invokes
+
+
 # =============================================================================
 # Error Handling Tests
 # =============================================================================
@@ -898,6 +926,26 @@ def test_execution_result():
     assert result.history[0] == ("step1", 6)
     assert result.history[1] == ("step2", 12)
     assert result.execution_time > 0
+    assert result.step_count == 2
+
+
+def test_async_execution_result():
+    @piped
+    async def step1(x):
+        return x + 1
+
+    @piped
+    async def step2(x):
+        return x * 2
+
+    pipeline = step1 | step2
+    result = asyncio.run(pipeline.async_run_detailed(5))
+
+    assert result.value == 12
+    assert len(result.history) == 2
+    assert result.history[0] == ("step1", 6)
+    assert result.history[1] == ("step2", 12)
+    assert result.execution_time >= 0
     assert result.step_count == 2
 
 

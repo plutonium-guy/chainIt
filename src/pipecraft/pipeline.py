@@ -117,6 +117,29 @@ class Pipeline(Generic[T, R]):
             n=len(self.steps),
         )
 
+    async def async_run_detailed(self, seed: Any = None) -> ExecutionResult[R]:
+        history = []
+        value = seed
+        start_time = time.perf_counter()
+        for step in self.steps:
+            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
+                object.__setattr__(step, '_cancel_event', self._cancel_event)
+            if self._is_cancelled():
+                raise asyncio.CancelledError()
+            if hasattr(step, 'async_run'):
+                value = await step.async_run(value)
+            else:
+                value = step.run(value)
+            name = getattr(step, '_func_name', type(step).__name__)
+            history.append((name, value))
+        execution_time = time.perf_counter() - start_time
+        return ExecutionResult(
+            value=value,
+            history=tuple(history),
+            dt=execution_time,
+            n=len(self.steps),
+        )
+
     def map(self, items: Iterable[Any]) -> List[Any]:
         """Apply pipeline to each item in a collection."""
         return [self.run(item) for item in items]
