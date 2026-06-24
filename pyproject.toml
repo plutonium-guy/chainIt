@@ -1,11 +1,11 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pipecraft"
 version = "0.1.0"
-description = "Composable pipeline framework with graph/DAG support and optional Rust acceleration"
+description = "Composable pipeline framework with graph/DAG support"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -20,7 +20,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Programming Language :: Rust",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
@@ -37,13 +36,11 @@ Homepage = "https://github.com/amiyamandal-dev/chainIt"
 Repository = "https://github.com/amiyamandal-dev/chainIt"
 Issues = "https://github.com/amiyamandal-dev/chainIt/issues"
 
-[tool.maturin]
-python-source = "src"
-module-name = "pipecraft._rust"
-manifest-path = "rust/Cargo.toml"
-features = ["pyo3/extension-module"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/pipecraft"]
 
 [tool.pytest.ini_options]
 pythonpath = [
     "src",
+    ".",
 ]

@@ -22,9 +22,10 @@ venv/
 .coverage
 htmlcov/
 
-# Rust
-rust/target/
+# Compiled extensions
+*.so
 
 # OS
 .DS_Store
 Thumbs.db
+._*

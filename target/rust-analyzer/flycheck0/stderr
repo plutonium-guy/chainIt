@@ -1,4 +1,0 @@
-error: failed to parse manifest at `/Volumes/external_storage/chainIt/rust/Cargo.toml`
-
-Caused by:
-  can't find library `chainit_rust`, rename file to `src/lib.rs` or specify lib.path

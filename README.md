@@ -1,6 +1,6 @@
 # pipecraft
 
-Composable function pipeline framework for Python. Pipe functions with `|`, build DAGs, branch conditionally, and run in parallel - with optional Rust acceleration.
+Composable function pipeline framework for Python. Pipe functions with `|`, build DAGs, branch conditionally, and run in parallel.
 
 ```python
 from pipecraft import piped
@@ -22,7 +22,7 @@ result = (add_one | double).run(5)  # 12
 pip install pipecraft
 ```
 
-Rust acceleration is included automatically when installing from a wheel. For optional dependencies:
+For optional dependencies:
 
 ```bash
 pip install pipecraft[numpy]    # numpy support
@@ -38,7 +38,6 @@ pip install pipecraft[all]      # numpy + numba JIT
 - **Fan-out/fan-in** for parallel branches
 - **Retry + circuit breaker** for reliability
 - **Async support** across every component
-- **Rust-accelerated** graph operations (auto-detected)
 
 ## Usage
 
@@ -263,34 +262,14 @@ len(pipeline)                # Number of steps
 pipeline[0]                  # Access step by index
 ```
 
-## Rust Extension
-
-The Rust extension is built automatically when installing from a wheel. It accelerates:
-
-- `Graph._topo_sort()` - topological sort
-- `Graph.roots` / `Graph.leaves` - graph introspection
-
-Check availability:
-
-```python
-from pipecraft import HAS_RUST
-print(HAS_RUST)  # True if Rust extension is loaded
-```
-
-Direct access:
-
-```python
-from pipecraft._rust import topo_sort, fast_map, batch_items, find_roots, find_leaves
-```
-
 ## Development
 
 ```bash
 git clone https://github.com/amiyamandal-dev/chainIt.git
 cd chainIt
 python -m venv .venv && source .venv/bin/activate
-pip install maturin pytest numpy
-maturin develop --release
+pip install pytest numpy
+pip install -e .
 pytest tests/ -v
 ```
 

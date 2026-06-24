@@ -4,9 +4,12 @@ import abc
 import asyncio
 import functools
 import inspect
+import itertools
 import logging
+import pickle
 import time
 import sys
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -23,14 +26,6 @@ try:
 except ImportError:
     np = None  # type: ignore[assignment]
     HAS_NUMPY = False
-
-# Rust acceleration (optional — auto-built when Cargo is available)
-try:
-    from pipecraft import _rust
-    HAS_RUST = True
-except ImportError:
-    _rust = None  # type: ignore[assignment]
-    HAS_RUST = False
 
 # Constants
 PIPE: object = object()
@@ -120,7 +115,6 @@ class CircuitState(Enum):
 # ---------------------------------------------------------------------------
 def _is_pickleable(obj: Any) -> bool:
     try:
-        import pickle
         pickle.dumps(obj)
         return True
     except Exception:
@@ -129,6 +123,37 @@ def _is_pickleable(obj: Any) -> bool:
 
 def _get_func_name(func: Callable) -> str:
     return getattr(func, '__name__', getattr(func, 'func_name', str(func)))
+
+
+def _run_branch_value(branch: Any, value: Any) -> Any:
+    """Run a (possibly None) branch synchronously on a value.
+
+    Shared stateless helper used by ConditionalStep and SwitchStep. A None
+    branch passes the value through unchanged; a branch with a `run` method is
+    invoked via it; otherwise the branch is called directly.
+    """
+    if branch is None:
+        return value
+    if hasattr(branch, 'run'):
+        return branch.run(value)
+    return branch(value)
+
+
+async def _async_run_branch_value(branch: Any, value: Any) -> Any:
+    """Run a (possibly None) branch asynchronously on a value.
+
+    Shared stateless helper used by ConditionalStep and SwitchStep.
+    """
+    if branch is None:
+        return value
+    if hasattr(branch, 'async_run'):
+        return await branch.async_run(value)
+    if hasattr(branch, 'run'):
+        return branch.run(value)
+    result = branch(value)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
 
 
 def _is_iterable_collection(obj: Any) -> bool:
@@ -259,7 +284,11 @@ class PipeStep(Generic[T, R]):
     async def async_run(self, input_value: Any = PIPE) -> R:
         return await self._execute_async(input_value)
 
-    def _execute_sync(self, input_value: Any) -> Any:
+    def _preflight_check(self) -> None:
+        """Shared pre-flight: reject if circuit is open or execution cancelled.
+
+        Identical for the sync and async execution paths.
+        """
         if self._check_circuit_breaker():
             raise CircuitBreakerError(self._func_name, Exception("Circuit breaker is open"))
 
@@ -267,15 +296,35 @@ class PipeStep(Generic[T, R]):
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()
 
+    def _record_and_raise(self, last_exception: BaseException) -> None:
+        """Shared terminal step after the retry loop exhausts.
+
+        Records exactly ONE circuit-breaker failure for the logical call (not one
+        per retry attempt) and raises the appropriate error. Identical for the
+        sync and async execution paths.
+        """
+        self._record_failure()
+        if self.retry_config and isinstance(last_exception, self.retry_config.errors):
+            raise RetryExhaustedError(self._func_name, last_exception)
+        raise PipelineError(self._func_name, last_exception)
+
+    def _execute_sync(self, input_value: Any) -> Any:
+        self._preflight_check()
+
         last_exception = None
         delay = self.retry_config.delay if self.retry_config else 0
 
         for attempt in range(self.retry_config.attempts if self.retry_config else 1):
             try:
                 if self.timeout is not None:
-                    with ThreadPoolExecutor(max_workers=1) as ex:
-                        fut = ex.submit(self._invoke_function, input_value)
-                        result = fut.result(timeout=self.timeout)
+                    # Submit to the shared cached thread pool instead of spinning
+                    # up a throwaway one. No `with` block: that would shut down the
+                    # shared pool. If the timeout fires, fut.result(timeout=...)
+                    # raises concurrent.futures.TimeoutError exactly as before and
+                    # the worker thread keeps running in the background either way.
+                    pool = _get_pool('thread')
+                    fut = pool.submit(self._invoke_function, input_value)
+                    result = fut.result(timeout=self.timeout)
                 else:
                     result = self._invoke_function(input_value)
 
@@ -293,7 +342,6 @@ class PipeStep(Generic[T, R]):
 
             except Exception as e:
                 last_exception = e
-                self._record_failure()
                 if (
                     self.retry_config
                     and attempt < self.retry_config.attempts - 1
@@ -305,17 +353,10 @@ class PipeStep(Generic[T, R]):
                     continue
                 break
 
-        if self.retry_config and isinstance(last_exception, self.retry_config.errors):
-            raise RetryExhaustedError(self._func_name, last_exception)
-        raise PipelineError(self._func_name, last_exception)
+        self._record_and_raise(last_exception)
 
     async def _execute_async(self, input_value: Any) -> Any:
-        if self._check_circuit_breaker():
-            raise CircuitBreakerError(self._func_name, Exception("Circuit breaker is open"))
-
-        cancel_event = getattr(self, '_cancel_event', None)
-        if cancel_event and cancel_event.is_set():
-            raise asyncio.CancelledError()
+        self._preflight_check()
 
         last_exception = None
         delay = self.retry_config.delay if self.retry_config else 0
@@ -323,7 +364,7 @@ class PipeStep(Generic[T, R]):
         for attempt in range(self.retry_config.attempts if self.retry_config else 1):
             try:
                 coro = self._invoke_function_async(input_value)
-                if self.timeout:
+                if self.timeout is not None:
                     result = await asyncio.wait_for(coro, timeout=self.timeout)
                 else:
                     result = await coro
@@ -337,7 +378,6 @@ class PipeStep(Generic[T, R]):
 
             except Exception as e:
                 last_exception = e
-                self._record_failure()
                 if (
                     self.retry_config
                     and attempt < self.retry_config.attempts - 1
@@ -349,12 +389,14 @@ class PipeStep(Generic[T, R]):
                     continue
                 break
 
-        if self.retry_config and isinstance(last_exception, self.retry_config.errors):
-            raise RetryExhaustedError(self._func_name, last_exception)
-        raise PipelineError(self._func_name, last_exception)
+        self._record_and_raise(last_exception)
 
     def _invoke_function(self, input_value: Any) -> Any:
         args, kwargs = self._prepare_args(input_value)
+        # Precedence is deterministic and documented: when both `parallel` and
+        # `batch_size > 1` are configured, `parallel` wins (each item is mapped
+        # individually across the pool). Batching only runs when `parallel` is
+        # not set, so the two modes never silently interfere.
         if self.parallel and self._should_parallelize(args):
             return self._execute_parallel(args, kwargs)
         if self.batch_size > 1 and self._should_batch(args):
@@ -363,6 +405,8 @@ class PipeStep(Generic[T, R]):
 
     async def _invoke_function_async(self, input_value: Any) -> Any:
         args, kwargs = self._prepare_args(input_value)
+        # Same documented precedence as the sync path: `parallel` wins over
+        # `batch_size` when both are configured.
         if self.parallel and self._should_parallelize(args):
             return await self._execute_parallel_async(args, kwargs)
         if self.batch_size > 1 and self._should_batch(args):
@@ -383,14 +427,20 @@ class PipeStep(Generic[T, R]):
     def _execute_parallel(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         items = args[0]
         pool = _get_pool(self.parallel)
-        results = list(pool.map(self.func, items))
+        # Forward any partially-applied kwargs to each call (consistent with
+        # _execute_batched). functools.partial keeps the callable picklable for
+        # process pools.
+        call = functools.partial(self.func, **kwargs) if kwargs else self.func
+        results = list(pool.map(call, items))
         return results[0] if len(results) == 1 else results
 
     async def _execute_parallel_async(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         items = args[0]
         pool = _get_pool(self.parallel)
         loop = asyncio.get_running_loop()
-        tasks = [loop.run_in_executor(pool, self.func, item) for item in items]
+        # Forward any partially-applied kwargs to each call (see _execute_parallel).
+        call = functools.partial(self.func, **kwargs) if kwargs else self.func
+        tasks = [loop.run_in_executor(pool, call, item) for item in items]
         results = list(await asyncio.gather(*tasks))
         return results[0] if len(results) == 1 else results
 
@@ -405,7 +455,17 @@ class PipeStep(Generic[T, R]):
             return []
         if isinstance(results[0], (list, tuple)):
             return [item for sublist in results for item in sublist]
-        if isinstance(results[0], (int, float)):
+        # Genuine numeric scalars are reduced with sum() across batches (e.g. a
+        # per-batch sum/mean reducer). `bool` is intentionally excluded even
+        # though it subclasses int -- summing booleans across batches is a
+        # surprising footgun, so boolean per-batch results are returned as a
+        # list for the caller to reduce explicitly. numpy scalar types are
+        # recognised as numeric when numpy is available, consistent with the
+        # rest of the module.
+        numeric_types: Tuple[type, ...] = (int, float)
+        if HAS_NUMPY:
+            numeric_types = (int, float, np.number)
+        if isinstance(results[0], numeric_types) and not isinstance(results[0], bool):
             return sum(results)
         return results
 
@@ -569,34 +629,15 @@ class ConditionalStep(Generic[T, R]):
     if_true: Any  # PipeStep, Node, Pipeline, or callable
     if_false: Any = None
 
-    def _run_branch(self, branch: Any, value: Any) -> Any:
-        if branch is None:
-            return value
-        if hasattr(branch, 'run'):
-            return branch.run(value)
-        return branch(value)
-
-    async def _async_run_branch(self, branch: Any, value: Any) -> Any:
-        if branch is None:
-            return value
-        if hasattr(branch, 'async_run'):
-            return await branch.async_run(value)
-        if hasattr(branch, 'run'):
-            return branch.run(value)
-        result = branch(value)
-        if asyncio.iscoroutine(result):
-            return await result
-        return result
-
     def run(self, value: T) -> R:
         if self.condition(value):
-            return self._run_branch(self.if_true, value)
-        return self._run_branch(self.if_false, value)
+            return _run_branch_value(self.if_true, value)
+        return _run_branch_value(self.if_false, value)
 
     async def async_run(self, value: T) -> R:
         if self.condition(value):
-            return await self._async_run_branch(self.if_true, value)
-        return await self._async_run_branch(self.if_false, value)
+            return await _async_run_branch_value(self.if_true, value)
+        return await _async_run_branch_value(self.if_false, value)
 
     @property
     def _func_name(self) -> str:
@@ -719,6 +760,14 @@ class Pipeline(Generic[T, R]):
 # ---------------------------------------------------------------------------
 # Fan-out / Fan-in / MapReduce
 # ---------------------------------------------------------------------------
+def _run_branch_on(branch: Any, value: Any) -> Any:
+    """Run a single branch on a value.
+
+    Module-level (picklable) helper so FanOutStep can use a ProcessPoolExecutor.
+    """
+    return branch.run(value)
+
+
 @dataclass
 class FanOutStep(Generic[T, R]):
     """Execute multiple branches in parallel."""
@@ -729,7 +778,11 @@ class FanOutStep(Generic[T, R]):
     def run(self, value: T) -> Tuple[R, ...]:
         if self.parallel:
             pool = _get_pool(self.parallel)
-            return tuple(pool.map(lambda branch: branch.run(value), self.branches))
+            # Use a module-level picklable callable (not a lambda) so this works
+            # with ProcessPoolExecutor (parallel='process') as well as threads.
+            return tuple(
+                pool.map(_run_branch_on, self.branches, itertools.repeat(value))
+            )
         return tuple(branch.run(value) for branch in self.branches)
 
     async def async_run(self, value: T) -> Tuple[R, ...]:
@@ -851,30 +904,11 @@ class SwitchStep(Generic[T, R]):
         k = self.key(value)
         return self.branches.get(k, self.default)
 
-    def _run_branch(self, branch: Any, value: Any) -> Any:
-        if branch is None:
-            return value
-        if hasattr(branch, 'run'):
-            return branch.run(value)
-        return branch(value)
-
-    async def _async_run_branch(self, branch: Any, value: Any) -> Any:
-        if branch is None:
-            return value
-        if hasattr(branch, 'async_run'):
-            return await branch.async_run(value)
-        if hasattr(branch, 'run'):
-            return branch.run(value)
-        result = branch(value)
-        if asyncio.iscoroutine(result):
-            return await result
-        return result
-
     def run(self, value: T) -> R:
-        return self._run_branch(self._get_branch(value), value)
+        return _run_branch_value(self._get_branch(value), value)
 
     async def async_run(self, value: T) -> R:
-        return await self._async_run_branch(self._get_branch(value), value)
+        return await _async_run_branch_value(self._get_branch(value), value)
 
     @property
     def _func_name(self) -> str:
@@ -885,12 +919,11 @@ class SwitchStep(Generic[T, R]):
 
 
 # ---------------------------------------------------------------------------
-# Graph (DAG) execution — uses Rust topo_sort when available
+# Graph (DAG) execution
 # ---------------------------------------------------------------------------
 class Graph:
     """DAG-based pipeline for complex dependency graphs.
 
-    Uses Rust-accelerated topological sort when ``chainit_rust`` is installed.
     Independent nodes at the same depth level execute concurrently in async mode.
 
     Usage::
@@ -933,34 +966,20 @@ class Graph:
     @property
     def roots(self) -> List[str]:
         """Nodes with no parents (in-degree 0)."""
-        if HAS_RUST:
-            edge_dict = {n: sorted(self._edges.get(n, set())) for n in self._nodes}
-            return _rust.find_roots(edge_dict)
         return sorted(n for n in self._nodes if not self._reverse.get(n))
 
     @property
     def leaves(self) -> List[str]:
         """Nodes with no children (out-degree 0)."""
-        if HAS_RUST:
-            edge_dict = {n: sorted(self._edges.get(n, set())) for n in self._nodes}
-            return _rust.find_leaves(edge_dict)
         return sorted(n for n in self._nodes if not self._edges.get(n))
 
     def _topo_sort(self) -> List[str]:
-        """Topological sort. Uses Rust when available."""
-        if HAS_RUST:
-            edge_dict = {n: sorted(self._edges.get(n, set())) for n in self._nodes}
-            try:
-                return _rust.topo_sort(edge_dict)
-            except ValueError as e:
-                raise GraphCycleError(str(e)) from e
-
-        # Python fallback: Kahn's algorithm
+        """Topological sort via Kahn's algorithm."""
         in_degree = {n: len(self._reverse.get(n, set())) for n in self._nodes}
-        queue = sorted(n for n, d in in_degree.items() if d == 0)
+        queue = deque(sorted(n for n, d in in_degree.items() if d == 0))
         order = []
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             order.append(node)
             for child in sorted(self._edges.get(node, set())):
                 in_degree[child] -= 1
@@ -1243,5 +1262,5 @@ __all__ = [
     # Errors
     'PipelineError', 'RetryExhaustedError', 'CircuitBreakerError', 'GraphCycleError',
     # Utilities
-    'cleanup_pools', 'HAS_NUMPY', 'HAS_RUST',
+    'cleanup_pools', 'HAS_NUMPY',
 ]

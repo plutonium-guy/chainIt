@@ -5,7 +5,7 @@ from pipeline import (
     PIPE, Pipeline, piped, retry, circuit_breaker,
     FanOutStep, FanInStep, PipelineError, ExecutionResult,
     PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
-    SwitchStep, Graph, GraphCycleError, HAS_RUST,
+    SwitchStep, Graph, GraphCycleError,
 )
 
 # Try numpy — skip tests that need it if missing
@@ -985,48 +985,10 @@ def test_graph_multiple_roots():
 
 
 # =============================================================================
-# Rust Extension Tests
+# Graph topological sort
 # =============================================================================
 
-@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
-def test_rust_topo_sort():
-    from pipecraft import _rust as chainit_rust
-    result = chainit_rust.topo_sort({"a": ["b", "c"], "b": ["d"], "c": ["d"]})
-    assert result == ["a", "b", "c", "d"]
-
-
-@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
-def test_rust_topo_sort_cycle():
-    from pipecraft import _rust as chainit_rust
-    with pytest.raises(ValueError):
-        chainit_rust.topo_sort({"a": ["b"], "b": ["a"]})
-
-
-@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
-def test_rust_fast_map():
-    from pipecraft import _rust as chainit_rust
-    result = chainit_rust.fast_map(lambda x: x * 2, [1, 2, 3])
-    assert result == [2, 4, 6]
-
-
-@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
-def test_rust_batch_items():
-    from pipecraft import _rust as chainit_rust
-    result = chainit_rust.batch_items([1, 2, 3, 4, 5], 2)
-    assert result == [[1, 2], [3, 4], [5]]
-
-
-@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
-def test_rust_find_roots_leaves():
-    from pipecraft import _rust as chainit_rust
-    edges = {"a": ["b", "c"], "b": ["d"], "c": ["d"]}
-    assert chainit_rust.find_roots(edges) == ["a"]
-    assert chainit_rust.find_leaves(edges) == ["d"]
-
-
-@pytest.mark.skipif(not HAS_RUST, reason="Rust extension not available")
-def test_graph_uses_rust():
-    """Graph should use Rust topo_sort transparently."""
+def test_graph_topo_sort():
     g = (
         Graph()
         .add_node("x", piped(lambda v: v + 1))
@@ -1035,6 +997,18 @@ def test_graph_uses_rust():
     )
     results = g.run(seed=10)
     assert results["y"] == 22  # (10+1)*2
+
+
+def test_graph_topo_sort_cycle():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda v: v))
+        .add_node("b", piped(lambda v: v))
+        .add_edge("a", "b")
+        .add_edge("b", "a")
+    )
+    with pytest.raises(GraphCycleError):
+        g.run(seed=1)
 
 
 # =============================================================================
@@ -1161,6 +1135,144 @@ def test_graph_describe():
     assert "a -> b, c" in desc
     assert "b (leaf)" in desc
     assert "c (leaf)" in desc
+
+
+# =============================================================================
+# Regression tests for verified correctness bugs
+# =============================================================================
+
+def test_circuit_breaker_records_one_failure_per_logical_call():
+    """BUG 1: a retried call that ultimately fails must record exactly ONE
+    circuit-breaker failure, not one per retry attempt."""
+    counter = Counter()
+
+    @circuit_breaker(failure_threshold=2)
+    @retry(max_attempts=3, delay=0)
+    @piped
+    def flaky(x):
+        counter.increment()
+        raise MockException("always fails")
+
+    # First logical call: 3 attempts internally, but only ONE breaker failure.
+    with pytest.raises(PipelineError):
+        flaky.run(1)
+    # Breaker should still be closed -> the function runs again (3 more attempts).
+    with pytest.raises(PipelineError):
+        flaky.run(2)
+    # 2 logical failures == threshold -> breaker now open, function NOT invoked.
+    with pytest.raises(PipelineError):
+        flaky.run(3)
+
+    # 2 logical calls * 3 attempts each = 6 invocations; the 3rd call is
+    # short-circuited by the open breaker (0 invocations).
+    assert counter.count == 6
+
+
+def test_async_timeout_zero_is_enforced():
+    """BUG 2: async path must honor timeout=0.0 (is not None), not skip it."""
+    @piped(timeout=0.0)
+    async def slow(x):
+        await asyncio.sleep(0.05)
+        return x
+
+    with pytest.raises(PipelineError):
+        asyncio.run(slow.async_run(1))
+
+
+def test_parallel_and_batch_precedence_is_deterministic():
+    """BUG 3: when both parallel and batch_size are set, behavior must be
+    explicit and deterministic (parallel wins)."""
+    @piped(parallel='thread', batch_size=3)
+    def identity(x):
+        return x
+
+    # parallel wins: each item mapped individually -> per-item results.
+    result = identity.run([1, 2, 3, 4, 5])
+    assert result == [1, 2, 3, 4, 5]
+
+
+def test_parallel_forwards_kwargs_sync():
+    """BUG 4: keyword args bound by partial application must reach the parallel
+    workers (sync path)."""
+    @piped(parallel='thread')
+    def add(x, *, offset=0):
+        return x + offset
+
+    bound = add(PIPE, offset=10)
+    result = bound.run([1, 2, 3])
+    assert result == [11, 12, 13]
+
+
+def test_parallel_forwards_kwargs_async():
+    """BUG 4: keyword args must reach the parallel workers (async path)."""
+    @piped(parallel='thread')
+    def add(x, *, offset=0):
+        return x + offset
+
+    bound = add(PIPE, offset=100)
+    result = asyncio.run(bound.async_run([1, 2, 3]))
+    assert result == [101, 102, 103]
+
+
+def test_batched_does_not_sum_booleans():
+    """BUG 5: per-batch boolean results must NOT be silently summed; they are
+    returned as a list for explicit reduction."""
+    @piped(batch_size=2)
+    def all_positive(batch):
+        return all(v > 0 for v in batch)
+
+    result = all_positive.run([1, 2, 3, 4, -5, 6])
+    # 3 batches -> list of bools, not an int sum.
+    assert result == [True, True, False]
+
+
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+def test_batched_recognizes_numpy_scalars():
+    """BUG 6: numpy scalar results from batches are recognized as numeric and
+    summed (consistent with the numpy-aware rest of the module)."""
+    @piped(batch_size=2)
+    def batch_sum(batch):
+        return np.sum(np.array(batch))  # returns an np.integer scalar
+
+    result = batch_sum.run([1, 2, 3, 4])
+    assert result == 10
+
+
+def test_fanout_thread_parallel():
+    """BUG 7: FanOutStep with parallel='thread' must run without a lambda."""
+    branch1 = piped(lambda x: x + 1)
+    branch2 = piped(lambda x: x * 2)
+    fan_out = FanOutStep((branch1, branch2), parallel='thread')
+    assert fan_out.run(5) == (6, 10)
+
+
+def _fanout_add_one(x):
+    return x + 1
+
+
+def _fanout_times_two(x):
+    return x * 2
+
+
+def test_fanout_process_parallel():
+    """BUG 7: FanOutStep with parallel='process' must not crash on an
+    unpicklable lambda; branches over module-level functions are picklable."""
+    branch1 = piped(_fanout_add_one)
+    branch2 = piped(_fanout_times_two)
+    fan_out = FanOutStep((branch1, branch2), parallel='process')
+    assert fan_out.run(5) == (6, 10)
+
+
+def test_pipeline_shim_reexports():
+    """BUG 8: the `pipeline` shim must re-export everything the tests use."""
+    import pipeline
+    for name in (
+        "PIPE", "Pipeline", "piped", "retry", "circuit_breaker",
+        "FanOutStep", "FanInStep", "PipelineError", "ExecutionResult",
+        "PipelineBuilder", "MapReduceStep", "Node", "node", "ConditionalStep",
+        "SwitchStep", "Graph", "GraphCycleError", "_POOLS",
+    ):
+        assert hasattr(pipeline, name), f"pipeline shim missing {name}"
 
 
 if __name__ == "__main__":
