@@ -72,6 +72,66 @@ def test_kwarg_injection():
     assert result == 15
 
 
+def test_auto_map_collection_on_step():
+    """AUDIT: default @piped steps map list inputs per element."""
+    @piped
+    def double(x):
+        return x * 2
+
+    assert double.run([1, 2, 3]) == [2, 4, 6]
+    assert double.run([]) == []
+
+
+def test_auto_map_does_not_split_tuples():
+    """Tuples are structural values (e.g. graph fan-in), not auto-mapped."""
+    @piped
+    def add_pair(vals):
+        return vals[0] + vals[1]
+
+    assert add_pair.run((12, 18)) == 30
+
+
+def test_auto_map_collection_in_pipeline():
+    @piped
+    def add_one(x):
+        return x + 1
+
+    pipeline = add_one | add_one
+    assert pipeline.run([1, 2, 3]) == [3, 4, 5]
+
+
+def test_auto_map_async():
+    @piped
+    async def double(x):
+        return x * 2
+
+    result = asyncio.run(double.async_run([1, 2, 3]))
+    assert result == [2, 4, 6]
+
+
+def test_auto_map_single_element_list_passes_through():
+    """A one-item list is treated as a single value, not auto-mapped."""
+    @piped
+    def identity(x):
+        return x
+
+    assert identity.run([42]) == [42]
+
+
+def test_auto_map_respects_batch_and_parallel():
+    @piped(batch_size=2)
+    def batch_sum(batch):
+        return sum(batch)
+
+    assert batch_sum.run([1, 2, 3, 4]) == 10
+
+    @piped(parallel='thread')
+    def slow_square(x):
+        return x * x
+
+    assert slow_square.run([2, 3]) == [4, 9]
+
+
 # =============================================================================
 # Error Handling Tests
 # =============================================================================

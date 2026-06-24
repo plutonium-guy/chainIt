@@ -11,7 +11,12 @@ from .config import CircuitBreakerConfig, CircuitState, RetryConfig
 from .constants import HAS_NUMPY, PIPE, R, T, logger, np
 from .exceptions import CircuitBreakerError, PipelineError, RetryExhaustedError
 from .pools import _get_pool
-from .utils import _get_func_name, _is_iterable_collection, _is_pickleable
+from .utils import (
+    _get_func_name,
+    _is_auto_map_collection,
+    _is_iterable_collection,
+    _is_pickleable,
+)
 
 
 @dataclass
@@ -214,10 +219,13 @@ class PipeStep(Generic[T, R]):
 
     def _invoke_function(self, input_value: Any) -> Any:
         args, kwargs = self._prepare_args(input_value)
+        # parallel wins over batch; batch wins over per-element auto-map.
         if self.parallel and self._should_parallelize(args):
             return self._execute_parallel(args, kwargs)
         if self.batch_size > 1 and self._should_batch(args):
             return self._execute_batched(args, kwargs)
+        if self._should_auto_map(args):
+            return self._execute_auto_map(args, kwargs)
         return self.func(*args, **kwargs)
 
     async def _invoke_function_async(self, input_value: Any) -> Any:
@@ -226,6 +234,8 @@ class PipeStep(Generic[T, R]):
             return await self._execute_parallel_async(args, kwargs)
         if self.batch_size > 1 and self._should_batch(args):
             return await self._execute_batched_async(args, kwargs)
+        if self._should_auto_map(args):
+            return await self._execute_auto_map_async(args, kwargs)
         if self._is_async:
             return await self.func(*args, **kwargs)
         loop = asyncio.get_running_loop()
@@ -236,6 +246,36 @@ class PipeStep(Generic[T, R]):
 
     def _should_batch(self, args: Tuple[Any, ...]) -> bool:
         return len(args) == 1 and _is_iterable_collection(args[0]) and len(args[0]) > self.batch_size
+
+    def _should_auto_map(self, args: Tuple[Any, ...]) -> bool:
+        return (
+            self.parallel is None
+            and self.batch_size == 1
+            and len(args) == 1
+            and _is_auto_map_collection(args[0])
+            and len(args[0]) != 1
+        )
+
+    def _execute_auto_map(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        items = args[0]
+        if not items:
+            return []
+        call = functools.partial(self.func, **kwargs) if kwargs else self.func
+        return [call(item) for item in items]
+
+    async def _execute_auto_map_async(
+        self, args: Tuple[Any, ...], kwargs: Dict[str, Any],
+    ) -> Any:
+        items = args[0]
+        if not items:
+            return []
+        if self._is_async:
+            call = functools.partial(self.func, **kwargs) if kwargs else self.func
+            return list(await asyncio.gather(*(call(item) for item in items)))
+        call = functools.partial(self.func, **kwargs) if kwargs else self.func
+        loop = asyncio.get_running_loop()
+        tasks = [loop.run_in_executor(None, call, item) for item in items]
+        return list(await asyncio.gather(*tasks))
 
     def _execute_parallel(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         items = args[0]

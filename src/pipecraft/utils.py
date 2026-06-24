@@ -52,3 +52,8 @@ def _is_iterable_collection(obj: Any) -> bool:
     if HAS_NUMPY and isinstance(obj, np.ndarray):
         return True
     return False
+
+
+def _is_auto_map_collection(obj: Any) -> bool:
+    """List inputs that default @piped steps map over element-wise."""
+    return isinstance(obj, list)
