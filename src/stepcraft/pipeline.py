@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
-from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Union
 
+from .async_concurrency import gather_limited
 from .constants import R, T
-from .context import activate_context
+from .context import activate_context, wrap_worker
 from .hooks import StepHook, _call_hook
-from .pools import cleanup_pools
+from .node import Node
+from .pools import _get_pool, cleanup_pools
 from .result import ExecutionResult
 
 
@@ -76,6 +80,7 @@ class Pipeline(Generic[T, R]):
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        self._teardown_setup_once_nodes()
         cleanup_pools()
 
     def _ensure_cancel_event(self) -> asyncio.Event:
@@ -95,36 +100,62 @@ class Pipeline(Generic[T, R]):
         if self._is_cancelled():
             raise asyncio.CancelledError()
 
-    def run(self, seed: Any = None, *, on_step: Optional[StepHook] = None) -> R:
+    @staticmethod
+    def _teardown_setup_once_step(step: Any) -> None:
+        if isinstance(step, Node) and step.setup_once and getattr(step, '_setup_active', False):
+            step._teardown_once()
+
+    def _teardown_setup_once_nodes(self) -> None:
+        for step in self.steps:
+            self._teardown_setup_once_step(step)
+
+    async def _await_step(self, step: Any, step_input: Any) -> Any:
+        if hasattr(step, 'async_run'):
+            return await step.async_run(step_input)
+        loop = asyncio.get_running_loop()
+        call = wrap_worker(functools.partial(step.run, step_input))
+        return await loop.run_in_executor(None, call)
+
+    def run(
+        self,
+        seed: Any = None,
+        *,
+        on_step: Optional[StepHook] = None,
+        _finalize_setup_once: bool = True,
+    ) -> R:
         value = seed
-        with activate_context(self._context):
-            for step in self.steps:
-                self._prepare_step(step)
-                step_input = value
-                t0 = time.perf_counter()
-                value = step.run(step_input)
-                if on_step is not None:
-                    name = getattr(step, '_func_name', type(step).__name__)
-                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
-        return value
+        try:
+            with activate_context(self._context):
+                for step in self.steps:
+                    self._prepare_step(step)
+                    step_input = value
+                    t0 = time.perf_counter()
+                    value = step.run(step_input)
+                    if on_step is not None:
+                        name = getattr(step, '_func_name', type(step).__name__)
+                        _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
+            return value
+        finally:
+            if _finalize_setup_once:
+                self._teardown_setup_once_nodes()
 
     async def async_run(
         self, seed: Any = None, *, on_step: Optional[StepHook] = None
     ) -> R:
         value = seed
-        with activate_context(self._context):
-            for step in self.steps:
-                self._prepare_step(step)
-                step_input = value
-                t0 = time.perf_counter()
-                if hasattr(step, 'async_run'):
-                    value = await step.async_run(step_input)
-                else:
-                    value = step.run(step_input)
-                if on_step is not None:
-                    name = getattr(step, '_func_name', type(step).__name__)
-                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
-        return value
+        try:
+            with activate_context(self._context):
+                for step in self.steps:
+                    self._prepare_step(step)
+                    step_input = value
+                    t0 = time.perf_counter()
+                    value = await self._await_step(step, step_input)
+                    if on_step is not None:
+                        name = getattr(step, '_func_name', type(step).__name__)
+                        _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
+            return value
+        finally:
+            self._teardown_setup_once_nodes()
 
     def run_detailed(
         self, seed: Any = None, *, on_step: Optional[StepHook] = None
@@ -132,23 +163,26 @@ class Pipeline(Generic[T, R]):
         history = []
         value = seed
         start_time = time.perf_counter()
-        with activate_context(self._context):
-            for step in self.steps:
-                self._prepare_step(step)
-                step_input = value
-                t0 = time.perf_counter()
-                value = step.run(step_input)
-                name = getattr(step, '_func_name', type(step).__name__)
-                history.append((name, value))
-                if on_step is not None:
-                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
-        execution_time = time.perf_counter() - start_time
-        return ExecutionResult(
-            value=value,
-            history=tuple(history),
-            dt=execution_time,
-            n=len(self.steps),
-        )
+        try:
+            with activate_context(self._context):
+                for step in self.steps:
+                    self._prepare_step(step)
+                    step_input = value
+                    t0 = time.perf_counter()
+                    value = step.run(step_input)
+                    name = getattr(step, '_func_name', type(step).__name__)
+                    history.append((name, value))
+                    if on_step is not None:
+                        _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
+            execution_time = time.perf_counter() - start_time
+            return ExecutionResult(
+                value=value,
+                history=tuple(history),
+                dt=execution_time,
+                n=len(self.steps),
+            )
+        finally:
+            self._teardown_setup_once_nodes()
 
     async def async_run_detailed(
         self, seed: Any = None, *, on_step: Optional[StepHook] = None
@@ -156,39 +190,75 @@ class Pipeline(Generic[T, R]):
         history = []
         value = seed
         start_time = time.perf_counter()
-        with activate_context(self._context):
-            for step in self.steps:
-                self._prepare_step(step)
-                step_input = value
-                t0 = time.perf_counter()
-                if hasattr(step, 'async_run'):
-                    value = await step.async_run(step_input)
-                else:
-                    value = step.run(step_input)
-                name = getattr(step, '_func_name', type(step).__name__)
-                history.append((name, value))
-                if on_step is not None:
-                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
-        execution_time = time.perf_counter() - start_time
-        return ExecutionResult(
-            value=value,
-            history=tuple(history),
-            dt=execution_time,
-            n=len(self.steps),
-        )
+        try:
+            with activate_context(self._context):
+                for step in self.steps:
+                    self._prepare_step(step)
+                    step_input = value
+                    t0 = time.perf_counter()
+                    value = await self._await_step(step, step_input)
+                    name = getattr(step, '_func_name', type(step).__name__)
+                    history.append((name, value))
+                    if on_step is not None:
+                        _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
+            execution_time = time.perf_counter() - start_time
+            return ExecutionResult(
+                value=value,
+                history=tuple(history),
+                dt=execution_time,
+                n=len(self.steps),
+            )
+        finally:
+            self._teardown_setup_once_nodes()
 
     def map(
-        self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
+        self,
+        items: Iterable[Any],
+        *,
+        on_step: Optional[StepHook] = None,
+        parallel: Union[bool, int] = False,
     ) -> List[Any]:
-        """Apply pipeline to each item in a collection."""
-        return [self.run(item, on_step=on_step) for item in items]
+        """Apply pipeline to each item in a collection.
+
+        When *parallel* is ``True``, use the shared thread pool. When an
+        ``int``, cap concurrency with a dedicated bounded pool.
+        """
+        items_list = list(items)
+        if not parallel:
+            try:
+                return [
+                    self.run(item, on_step=on_step, _finalize_setup_once=False)
+                    for item in items_list
+                ]
+            finally:
+                self._teardown_setup_once_nodes()
+
+        run_item = wrap_worker(
+            lambda item: self.run(
+                item, on_step=on_step, _finalize_setup_once=False,
+            ),
+        )
+        try:
+            if parallel is True:
+                pool = _get_pool('thread')
+                return list(pool.map(run_item, items_list))
+
+            max_workers = int(parallel)
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                return list(pool.map(run_item, items_list))
+        finally:
+            self._teardown_setup_once_nodes()
 
     async def async_map(
-        self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
+        self,
+        items: Iterable[Any],
+        *,
+        on_step: Optional[StepHook] = None,
+        max_concurrency: Optional[int] = None,
     ) -> List[Any]:
         """Apply pipeline to each item asynchronously."""
         tasks = [self.async_run(item, on_step=on_step) for item in items]
-        return list(await asyncio.gather(*tasks))
+        return await gather_limited(tasks, max_concurrency=max_concurrency)
 
     def run_async(
         self, seed: Any = None, *, on_step: Optional[StepHook] = None,
@@ -198,11 +268,17 @@ class Pipeline(Generic[T, R]):
         return _run_async(self.async_run(seed, on_step=on_step))
 
     def map_async(
-        self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
+        self,
+        items: Iterable[Any],
+        *,
+        on_step: Optional[StepHook] = None,
+        max_concurrency: Optional[int] = None,
     ) -> List[Any]:
         """Apply pipeline to each item via the async runtime (uvloop when available)."""
         from .async_runtime import run_async as _run_async
-        return _run_async(self.async_map(items, on_step=on_step))
+        return _run_async(
+            self.async_map(items, on_step=on_step, max_concurrency=max_concurrency),
+        )
 
     @classmethod
     def from_spec(

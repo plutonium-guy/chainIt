@@ -8,7 +8,7 @@ from .async_runtime import (
     uvloop_policy,
 )
 from .branching import ConditionalStep, SwitchStep
-from .constants import HAS_NUMPY, PIPE
+from .constants import HAS_NUMPY, PIPE, get_numpy
 from .context import get_context
 from .decorators import circuit_breaker, node, piped, retry
 from .exceptions import (
@@ -53,7 +53,7 @@ __all__ = [
     'PipelineError', 'RetryExhaustedError', 'CircuitBreakerError', 'GraphCycleError',
     'MissingAnnotationError',
     # Utilities
-    'cleanup_pools', 'configure_pools', 'HAS_NUMPY', 'HAS_UVLOOP', 'HAS_FREE_THREADING',
+    'cleanup_pools', 'configure_pools', 'HAS_NUMPY', 'get_numpy', 'HAS_UVLOOP', 'HAS_FREE_THREADING',
     'is_gil_enabled', 'threads_provide_true_parallelism',
     'run_async', 'install_uvloop', 'uninstall_uvloop', 'uvloop_policy',
     'apply_step_beartype', 'beartype_enabled',

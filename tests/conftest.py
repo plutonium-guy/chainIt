@@ -1,33 +1,55 @@
-"""Pytest hooks for stepcraft test suite."""
-
-import os
-import sys
+"""Shared fixtures and test helpers for the stepcraft test suite."""
 
 import pytest
+import asyncio
+from pathlib import Path
+from pipeline import (
+    PIPE, Pipeline, piped, retry, circuit_breaker,
+    FanOutStep, FanInStep, PipelineError, ExecutionResult,
+    PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
+    SwitchStep, Graph, GraphCycleError, MissingAnnotationError,
+    HAS_UVLOOP, run_async, install_uvloop, uninstall_uvloop, uvloop_policy,
+)
 
-from stepcraft.pools import cleanup_pools
-
-_EXIT_STATUS = 0
-
-
-@pytest.hookimpl(trylast=True)
-def pytest_sessionfinish(session, exitstatus):
-    """Release executors (terminating process workers) once tests finish."""
-    global _EXIT_STATUS
-    _EXIT_STATUS = int(exitstatus)
-    cleanup_pools(wait=False)
+# stepcraft requires full type annotations on @piped/@node/Node by default.
+# These pre-existing tests exercise *other* behaviour with unannotated
+# functions, so we centrally opt them out here.
+strict_piped, strict_node, StrictNode = piped, node, Node
 
 
-@pytest.hookimpl(trylast=True)
-def pytest_unconfigure(config):
-    """Hard-exit after the summary so a leaked thread/process cannot stall.
+def piped(func=None, **kwargs):  # noqa: F811 - intentional test-wide shim
+    kwargs.setdefault("require_annotations", False)
+    return strict_piped(func, **kwargs) if func is not None else strict_piped(**kwargs)
 
-    Even with all tests passing, the process can hang at interpreter exit on
-    Linux: leaked spawn-based ProcessPoolExecutor workers and native-extension
-    runtime threads (e.g. uvloop's) are not always joined, leaving a CI step
-    hanging for hours after a green run. Running last — after the terminal
-    summary is printed — we flush and hard-exit with the pytest status code.
-    """
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(_EXIT_STATUS)
+
+def node(func=None, **kwargs):  # noqa: F811 - intentional test-wide shim
+    kwargs.setdefault("require_annotations", False)
+    return strict_node(func, **kwargs) if func is not None else strict_node(**kwargs)
+
+
+class Node(StrictNode):  # noqa: F811 - intentional test-wide shim
+    require_annotations = False
+
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+    HAS_NUMPY = False
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class MockException(Exception):
+    pass
+
+
+class Counter:
+    def __init__(self):
+        self.count = 0
+
+    def increment(self):
+        self.count += 1
+        return self.count

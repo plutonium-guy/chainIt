@@ -6,6 +6,7 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Iterable, List, Optional, Tuple
 
+from .async_concurrency import gather_limited
 from .constants import R, T
 from .context import wrap_worker
 from .pools import _get_pool
@@ -23,6 +24,7 @@ class FanOutStep(Generic[T, R]):
 
     branches: Tuple[Any, ...]
     parallel: Optional[str] = None
+    max_concurrency: Optional[int] = None
 
     def __post_init__(self):
         parallel = resolve_parallel_kind(self.parallel)
@@ -47,7 +49,9 @@ class FanOutStep(Generic[T, R]):
                 loop.run_in_executor(pool, runner, branch, value)
                 for branch in self.branches
             ]
-            return tuple(await asyncio.gather(*tasks))
+            return tuple(await gather_limited(
+                tasks, max_concurrency=self.max_concurrency,
+            ))
 
         tasks = []
         for branch in self.branches:
@@ -57,7 +61,7 @@ class FanOutStep(Generic[T, R]):
                 loop = asyncio.get_running_loop()
                 call = wrap_worker(lambda b=branch, v=value: b.run(v))
                 tasks.append(loop.run_in_executor(None, call))
-        return tuple(await asyncio.gather(*tasks))
+        return tuple(await gather_limited(tasks, max_concurrency=self.max_concurrency))
 
     @property
     def _func_name(self) -> str:
@@ -99,6 +103,7 @@ class MapReduceStep(Generic[T, R]):
     mapper: Callable[[T], Any]
     reducer: Callable[[Iterable[Any]], R]
     batch_size: int = 1
+    max_concurrency: Optional[int] = None
     _mapper_is_async: bool = field(default=False, init=False)
 
     def __post_init__(self):
@@ -115,7 +120,10 @@ class MapReduceStep(Generic[T, R]):
         return result
 
     async def _map_batch(self, batch: List[T]) -> List[Any]:
-        return list(await asyncio.gather(*(self._map_item(x) for x in batch)))
+        return list(await gather_limited(
+            (self._map_item(x) for x in batch),
+            max_concurrency=self.max_concurrency,
+        ))
 
     def run(self, items: Iterable[T]) -> R:
         results: List[Any] = []

@@ -8,9 +8,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Generic, Optional, Tuple
 
+from .async_concurrency import gather_limited
 from .config import CircuitBreakerConfig, CircuitState, RetryConfig
 from .context import wrap_worker
-from .constants import HAS_NUMPY, PIPE, R, T, logger, np
+from .constants import HAS_NUMPY, PIPE, R, T, get_numpy, logger
 from .exceptions import CircuitBreakerError, PipelineError, RetryExhaustedError
 from .pools import _get_pool
 from .runtime import resolve_parallel_kind
@@ -34,6 +35,7 @@ class PipeStep(Generic[T, R]):
     batch_size: int = 1
     parallel: Optional[str] = None  # 'thread', 'process', or 'auto'
     auto_map: bool = True
+    max_concurrency: Optional[int] = None
 
     # Reliability
     retry_config: Optional[RetryConfig] = None
@@ -153,6 +155,7 @@ class PipeStep(Generic[T, R]):
             'batch_size': self.batch_size,
             'parallel': self.parallel,
             'auto_map': self.auto_map,
+            'max_concurrency': self.max_concurrency,
             'retry_config': self.retry_config,
             'circuit_config': self.circuit_config,
             'timeout': self.timeout,
@@ -182,11 +185,12 @@ class PipeStep(Generic[T, R]):
             raise RetryExhaustedError(self._func_name, last_exception)
         raise PipelineError(self._func_name, last_exception)
 
-    def _finalize_success(self, result: Any, *, sync: bool) -> Any:
+    def _finalize_success(self, result: Any, *, sync: bool, mapped: bool = False) -> Any:
         if sync and asyncio.iscoroutine(result):
             raise RuntimeError(
                 f"Cannot await coroutine {self._func_name} in synchronous context"
             )
+        self._validate_schema(result, mapped=mapped)
         self._reset_circuit_breaker()
         return result
 
@@ -227,7 +231,7 @@ class PipeStep(Generic[T, R]):
                         self._wrap_worker(self._invoke_function), input_value,
                     )
                     try:
-                        result = fut.result(timeout=self.timeout)
+                        result, mapped = fut.result(timeout=self.timeout)
                     except Exception:
                         # Best-effort: cancel only succeeds if the worker has
                         # not started; a running thread cannot be interrupted.
@@ -241,9 +245,9 @@ class PipeStep(Generic[T, R]):
                             )
                         raise
                 else:
-                    result = self._invoke_function(input_value)
+                    result, mapped = self._invoke_function(input_value)
 
-                return self._finalize_success(result, sync=True)
+                return self._finalize_success(result, sync=True, mapped=mapped)
 
             except Exception as e:
                 last_exception = e
@@ -266,11 +270,11 @@ class PipeStep(Generic[T, R]):
             try:
                 coro = self._invoke_function_async(input_value)
                 if self.timeout is not None:
-                    result = await asyncio.wait_for(coro, timeout=self.timeout)
+                    result, mapped = await asyncio.wait_for(coro, timeout=self.timeout)
                 else:
-                    result = await coro
+                    result, mapped = await coro
 
-                return self._finalize_success(result, sync=False)
+                return self._finalize_success(result, sync=False, mapped=mapped)
 
             except Exception as e:
                 last_exception = e
@@ -283,7 +287,7 @@ class PipeStep(Generic[T, R]):
 
         self._record_and_raise(last_exception)
 
-    def _invoke_function(self, input_value: Any) -> Any:
+    def _invoke_function(self, input_value: Any) -> Tuple[Any, bool]:
         args, kwargs = self._prepare_args(input_value)
         # parallel wins over batch; batch wins over per-element auto-map.
         # `mapped` marks element-wise execution so schema is checked per item.
@@ -295,10 +299,9 @@ class PipeStep(Generic[T, R]):
             result, mapped = self._execute_auto_map(args, kwargs), True
         else:
             result, mapped = self.func(*args, **kwargs), False
-        self._validate_schema(result, mapped=mapped)
-        return result
+        return result, mapped
 
-    async def _invoke_function_async(self, input_value: Any) -> Any:
+    async def _invoke_function_async(self, input_value: Any) -> Tuple[Any, bool]:
         args, kwargs = self._prepare_args(input_value)
         if self.parallel and self._should_parallelize(args):
             result, mapped = await self._execute_parallel_async(args, kwargs), True
@@ -312,8 +315,7 @@ class PipeStep(Generic[T, R]):
             loop = asyncio.get_running_loop()
             call = self._wrap_worker(functools.partial(self.func, *args, **kwargs))
             result, mapped = await loop.run_in_executor(None, call), False
-        self._validate_schema(result, mapped=mapped)
-        return result
+        return result, mapped
 
     def _should_parallelize(self, args: Tuple[Any, ...]) -> bool:
         return len(args) == 1 and _is_iterable_collection(args[0]) and len(args[0]) > 1
@@ -349,12 +351,15 @@ class PipeStep(Generic[T, R]):
             return []
         if self._is_async:
             call = functools.partial(self.func, **kwargs) if kwargs else self.func
-            return list(await asyncio.gather(*(call(item) for item in items)))
+            return list(await gather_limited(
+                (call(item) for item in items),
+                max_concurrency=self.max_concurrency,
+            ))
         call = functools.partial(self.func, **kwargs) if kwargs else self.func
         call = self._wrap_worker(call)
         loop = asyncio.get_running_loop()
         tasks = [loop.run_in_executor(None, call, item) for item in items]
-        return list(await asyncio.gather(*tasks))
+        return list(await gather_limited(tasks, max_concurrency=self.max_concurrency))
 
     def _execute_parallel(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         items = args[0]
@@ -368,14 +373,19 @@ class PipeStep(Generic[T, R]):
         items = args[0]
         if self._is_async:
             call = functools.partial(self.func, **kwargs) if kwargs else self.func
-            results = list(await asyncio.gather(*(call(item) for item in items)))
+            results = list(await gather_limited(
+                (call(item) for item in items),
+                max_concurrency=self.max_concurrency,
+            ))
         else:
             pool = _get_pool(self.parallel)
             loop = asyncio.get_running_loop()
             call = functools.partial(self.func, **kwargs) if kwargs else self.func
             call = self._wrap_worker(call, self.parallel)
             tasks = [loop.run_in_executor(pool, call, item) for item in items]
-            results = list(await asyncio.gather(*tasks))
+            results = list(await gather_limited(
+                tasks, max_concurrency=self.max_concurrency,
+            ))
         return results[0] if len(results) == 1 else results
 
     def _execute_batched(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
@@ -410,7 +420,9 @@ class PipeStep(Generic[T, R]):
             return [item for sublist in results for item in sublist]
         numeric_types: Tuple[type, ...] = (int, float)
         if HAS_NUMPY:
-            numeric_types = (int, float, np.number)
+            np_mod = get_numpy()
+            if np_mod is not None:
+                numeric_types = (int, float, np_mod.number)
         if isinstance(results[0], numeric_types) and not isinstance(results[0], bool):
             return sum(results)
         return results

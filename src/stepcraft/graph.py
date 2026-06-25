@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .async_concurrency import gather_limited
 from .context import activate_context, wrap_worker
 from .exceptions import GraphCycleError
 from .hooks import StepHook, _call_hook
@@ -14,12 +15,16 @@ from .pools import _get_pool
 class Graph:
     """DAG-based pipeline for complex dependency graphs."""
 
-    __slots__ = ('_nodes', '_edges', '_reverse', '_topo_order', '_topo_levels_cache', '_context')
+    __slots__ = (
+        '_nodes', '_edges', '_reverse', '_parent_order', '_topo_order',
+        '_topo_levels_cache', '_context',
+    )
 
     def __init__(self, *, context: Optional[Dict[str, Any]] = None):
         self._nodes: Dict[str, Any] = {}
         self._edges: Dict[str, Set[str]] = {}
         self._reverse: Dict[str, Set[str]] = {}
+        self._parent_order: Dict[str, Tuple[str, ...]] = {}
         self._topo_order: Optional[List[str]] = None
         self._topo_levels_cache: Optional[List[List[str]]] = None
         self._context = context
@@ -27,6 +32,7 @@ class Graph:
     def _invalidate_topo_cache(self) -> None:
         self._topo_order = None
         self._topo_levels_cache = None
+        self._parent_order.clear()
 
     def add_node(self, name: str, step: Any) -> 'Graph':
         self._nodes[name] = step
@@ -42,6 +48,7 @@ class Graph:
             raise KeyError(f"Node '{to_node}' not found")
         self._edges[from_node].add(to_node)
         self._reverse.setdefault(to_node, set()).add(from_node)
+        self._parent_order.pop(to_node, None)
         self._invalidate_topo_cache()
         return self
 
@@ -114,13 +121,20 @@ class Graph:
             return await result
         return result
 
+    def _sorted_parents(self, name: str) -> Tuple[str, ...]:
+        ordered = self._parent_order.get(name)
+        if ordered is None:
+            ordered = tuple(sorted(self._reverse.get(name, set())))
+            self._parent_order[name] = ordered
+        return ordered
+
     def _get_node_input(self, name: str, results: Dict[str, Any], seed: Any) -> Any:
         parents = self._reverse.get(name, set())
         if not parents:
             return seed
         if len(parents) == 1:
             return results[next(iter(parents))]
-        return tuple(results[p] for p in sorted(parents))
+        return tuple(results[p] for p in self._sorted_parents(name))
 
     def run(
         self,
@@ -141,7 +155,7 @@ class Graph:
                         name = level[0]
                         inp = self._get_node_input(name, results, seed)
                         t0 = time.perf_counter()
-                        results[name] = self._run_node(name, inp)
+                        results[name] = run_node(name, inp)
                         _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
                     else:
                         futures = {}

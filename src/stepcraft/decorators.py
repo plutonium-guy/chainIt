@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable, Optional, Tuple, Union
 
 from .config import CircuitBreakerConfig, RetryConfig
-from .constants import HAS_NUMPY, logger, np
+from .constants import HAS_NUMPY, get_numpy, logger
 from .node import Node
 from .step import PipeStep
 from .typecheck import apply_step_beartype, assert_fully_annotated, resolve_output_schema
@@ -23,6 +23,8 @@ def piped(
     jit: bool = False,
     vectorize: bool = False,
     require_annotations: bool = True,
+    typecheck: bool = True,
+    max_concurrency: Optional[int] = None,
 ) -> Union[PipeStep, Callable[[Callable], PipeStep]]:
     """Create a PipeStep from a function.
 
@@ -44,7 +46,7 @@ def piped(
                 _get_func_name(f), parallel, batch_size,
             )
 
-        checked = apply_step_beartype(f)
+        checked = apply_step_beartype(f) if typecheck else f
         optimized = checked
         output_schema = resolve_output_schema(f, schema)
 
@@ -70,7 +72,8 @@ def piped(
                 vectorized = True
             except ImportError:
                 if HAS_NUMPY:
-                    optimized = np.vectorize(optimized, cache=True)
+                    np_mod = get_numpy()
+                    optimized = np_mod.vectorize(optimized, cache=True)
                     vectorized = True
             if not vectorized:
                 logger.warning(
@@ -88,6 +91,7 @@ def piped(
             timeout=timeout,
             cancel_on_timeout=cancel_on_timeout,
             schema=output_schema,
+            max_concurrency=max_concurrency,
         )
 
     return decorator(func) if func else decorator

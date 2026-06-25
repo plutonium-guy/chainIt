@@ -4,7 +4,7 @@ import asyncio
 import pickle
 from typing import Any, Callable
 
-from .constants import HAS_NUMPY, np
+from .constants import HAS_NUMPY, get_numpy
 
 
 def _is_pickleable(obj: Any) -> bool:
@@ -49,8 +49,10 @@ def _is_iterable_collection(obj: Any) -> bool:
     """Check if obj is a list/tuple/ndarray (not str/bytes/dict)."""
     if isinstance(obj, (list, tuple)):
         return True
-    if HAS_NUMPY and isinstance(obj, np.ndarray):
-        return True
+    if HAS_NUMPY:
+        np_mod = get_numpy()
+        if np_mod is not None and isinstance(obj, np_mod.ndarray):
+            return True
     return False
 
 

@@ -59,7 +59,8 @@ def _piped_options(entry: dict) -> dict:
     opts = dict(entry.get("piped") or {})
     for key in (
         "batch_size", "parallel", "auto_map", "map", "timeout",
-        "cancel_on_timeout", "schema", "jit", "vectorize",
+        "cancel_on_timeout", "schema", "jit", "vectorize", "max_concurrency",
+        "typecheck",
     ):
         if key in entry and key not in opts:
             opts[key] = entry[key]
@@ -122,7 +123,11 @@ def _build_step(
 
     if step_type == "fan_out":
         branches = tuple(_build_step(branch, registry) for branch in entry["branches"])
-        return FanOutStep(branches=branches, parallel=entry.get("parallel"))
+        return FanOutStep(
+            branches=branches,
+            parallel=entry.get("parallel"),
+            max_concurrency=entry.get("max_concurrency"),
+        )
 
     if step_type == "fan_in":
         return FanInStep(combiner=_resolve_callable(entry["combiner"], registry))
@@ -132,6 +137,7 @@ def _build_step(
             mapper=_resolve_callable(entry["mapper"], registry),
             reducer=_resolve_callable(entry["reducer"], registry),
             batch_size=entry.get("batch_size", 1),
+            max_concurrency=entry.get("max_concurrency"),
         )
 
     raise ValueError(f"Unknown pipeline step type: {step_type!r}")

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stepcraft"
-version = "0.2.0"
+version = "0.2.1"
 description = "Composable pipeline framework with graph/DAG support"
 readme = "README.md"
 license = "MIT"

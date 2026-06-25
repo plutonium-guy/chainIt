@@ -2,65 +2,40 @@ import pytest
 import time
 import asyncio
 import logging
-from pathlib import Path
-from pipeline import (
-    PIPE, Pipeline, piped, retry, circuit_breaker,
-    FanOutStep, FanInStep, PipelineError, ExecutionResult,
-    PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
-    SwitchStep, Graph, GraphCycleError, MissingAnnotationError,
-    HAS_UVLOOP, run_async, install_uvloop, uninstall_uvloop, uvloop_policy,
+
+from conftest import (
+    FIXTURES,
+    Counter,
+    Graph,
+    GraphCycleError,
+    HAS_NUMPY,
+    HAS_UVLOOP,
+    MockException,
+    MissingAnnotationError,
+    Node,
+    PIPE,
+    Pipeline,
+    PipelineBuilder,
+    PipelineError,
+    ExecutionResult,
+    FanInStep,
+    FanOutStep,
+    MapReduceStep,
+    ConditionalStep,
+    SwitchStep,
+    install_uvloop,
+    node,
+    piped,
+    retry,
+    circuit_breaker,
+    run_async,
+    strict_node,
+    strict_piped,
+    StrictNode,
+    uninstall_uvloop,
+    uvloop_policy,
+    np,
 )
-
-# ---------------------------------------------------------------------------
-# stepcraft requires full type annotations on @piped/@node/Node by default.
-# These pre-existing tests exercise *other* behaviour with unannotated
-# functions, so we centrally opt them out here. The dedicated enforcement tests
-# below use the strict (real) decorators via `strict_*`.
-# ---------------------------------------------------------------------------
-strict_piped, strict_node, StrictNode = piped, node, Node
-
-
-def piped(func=None, **kwargs):  # noqa: F811 - intentional test-wide shim
-    kwargs.setdefault("require_annotations", False)
-    return strict_piped(func, **kwargs) if func is not None else strict_piped(**kwargs)
-
-
-def node(func=None, **kwargs):  # noqa: F811 - intentional test-wide shim
-    kwargs.setdefault("require_annotations", False)
-    return strict_node(func, **kwargs) if func is not None else strict_node(**kwargs)
-
-
-class Node(StrictNode):  # noqa: F811 - intentional test-wide shim
-    require_annotations = False
-
-# Try numpy — skip tests that need it if missing
-try:
-    import numpy as np
-    HAS_NUMPY = True
-except ImportError:
-    np = None
-    HAS_NUMPY = False
-
-
-# =============================================================================
-# Test Utilities
-# =============================================================================
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-class MockException(Exception):
-    pass
-
-
-class Counter:
-    def __init__(self):
-        self.count = 0
-
-    def increment(self):
-        self.count += 1
-        return self.count
-
 
 # =============================================================================
 # Basic Pipeline Tests
@@ -167,26 +142,6 @@ def test_auto_map_can_be_disabled():
     assert length.run([1, 2, 3]) == 3
 
 
-def test_circuit_breaker_decorated_copies_are_independent():
-    @piped
-    def faulty(x):
-        raise MockException("fail")
-
-    a = circuit_breaker(failure_threshold=2)(faulty)
-    b = circuit_breaker(failure_threshold=2)(faulty)
-    assert a is not b
-
-    with pytest.raises(PipelineError):
-        a.run(1)
-    with pytest.raises(PipelineError):
-        a.run(2)
-    with pytest.raises(PipelineError):
-        a.run(3)  # open — short-circuited
-
-    with pytest.raises(PipelineError):
-        b.run(1)  # independent breaker still invokes
-
-
 # =============================================================================
 # Error Handling Tests
 # =============================================================================
@@ -220,88 +175,6 @@ def test_error_history():
     with pytest.raises(PipelineError):
         pipeline.run(5)
     assert counter.count == 2
-
-
-# =============================================================================
-# Retry Tests
-# =============================================================================
-
-def test_retry_success():
-    counter = Counter()
-
-    @retry(max_attempts=3)
-    @piped
-    def flaky(x):
-        counter.increment()
-        if counter.count < 3:
-            raise MockException("Flaky")
-        return x * 2
-
-    result = flaky.run(5)
-    assert result == 10
-    assert counter.count == 3
-
-
-def test_retry_exhaustion():
-    counter = Counter()
-
-    @retry(max_attempts=3)
-    @piped
-    def always_fails(x):
-        counter.increment()
-        raise MockException("Always fails")
-
-    with pytest.raises(PipelineError) as exc_info:
-        always_fails.run(5)
-    assert "RetryExhausted" in str(exc_info.value)
-    assert counter.count == 3
-
-
-# =============================================================================
-# Circuit Breaker Tests
-# =============================================================================
-
-def test_circuit_breaker_trip():
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=2)
-    @piped
-    def faulty(x):
-        counter.increment()
-        raise MockException("Faulty")
-
-    with pytest.raises(PipelineError):
-        faulty.run(1)
-    with pytest.raises(PipelineError):
-        faulty.run(2)
-    with pytest.raises(PipelineError):
-        faulty.run(3)
-    assert counter.count == 2
-
-
-def test_circuit_breaker_recovery():
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)
-    @piped
-    def sometimes_fails(x):
-        counter.increment()
-        if x % 2 == 0:
-            raise MockException("Failed on even")
-        return x * 2
-
-    with pytest.raises(PipelineError):
-        sometimes_fails.run(2)
-    with pytest.raises(PipelineError):
-        sometimes_fails.run(4)
-    with pytest.raises(PipelineError):
-        sometimes_fails.run(6)
-
-    time.sleep(0.15)
-    result = sometimes_fails.run(3)
-    assert result == 6
-    result = sometimes_fails.run(5)
-    assert result == 10
 
 
 # =============================================================================
@@ -1528,33 +1401,6 @@ def test_graph_describe():
 # Regression tests for verified correctness bugs
 # =============================================================================
 
-def test_circuit_breaker_records_one_failure_per_logical_call():
-    """BUG 1: a retried call that ultimately fails must record exactly ONE
-    circuit-breaker failure, not one per retry attempt."""
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=2)
-    @retry(max_attempts=3, delay=0)
-    @piped
-    def flaky(x):
-        counter.increment()
-        raise MockException("always fails")
-
-    # First logical call: 3 attempts internally, but only ONE breaker failure.
-    with pytest.raises(PipelineError):
-        flaky.run(1)
-    # Breaker should still be closed -> the function runs again (3 more attempts).
-    with pytest.raises(PipelineError):
-        flaky.run(2)
-    # 2 logical failures == threshold -> breaker now open, function NOT invoked.
-    with pytest.raises(PipelineError):
-        flaky.run(3)
-
-    # 2 logical calls * 3 attempts each = 6 invocations; the 3rd call is
-    # short-circuited by the open breaker (0 invocations).
-    assert counter.count == 6
-
-
 def test_async_timeout_zero_is_enforced():
     """BUG 2: async path must honor timeout=0.0 (is not None), not skip it."""
     @piped(timeout=0.0)
@@ -1953,137 +1799,6 @@ def test_graph_on_step_hook():
 
 
 # =============================================================================
-# Circuit breaker — half-open single probe
-# =============================================================================
-
-def test_circuit_breaker_half_open_single_probe():
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)
-    @piped
-    def always_fails(x):
-        counter.increment()
-        raise MockException("fail")
-
-    # Trip the breaker (threshold=2).
-    for i in range(2):
-        with pytest.raises(PipelineError):
-            always_fails.run(i)
-    assert counter.count == 2
-
-    # Open: short-circuited, function not invoked.
-    with pytest.raises(PipelineError):
-        always_fails.run(99)
-    assert counter.count == 2
-
-    time.sleep(0.15)
-
-    # Half-open: exactly ONE probe runs, fails, breaker re-opens.
-    with pytest.raises(PipelineError):
-        always_fails.run(1)
-    assert counter.count == 3
-
-    # Re-opened immediately: no second probe.
-    with pytest.raises(PipelineError):
-        always_fails.run(2)
-    assert counter.count == 3
-
-
-def test_circuit_breaker_half_open_probe_success_closes():
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)
-    @piped
-    def sometimes(x):
-        counter.increment()
-        if x < 0:
-            raise MockException("neg")
-        return x * 2
-
-    for x in (-1, -2):
-        with pytest.raises(PipelineError):
-            sometimes.run(x)
-
-    time.sleep(0.15)
-    # Successful probe closes the breaker.
-    assert sometimes.run(5) == 10
-    assert sometimes.run(7) == 14
-
-
-def test_circuit_breaker_half_open_cancel_preserves_probe():
-    """CR-2: cancel before probe must not consume the half-open slot."""
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=1, recovery_timeout=0.1)
-    @piped
-    def sometimes(x):
-        counter.increment()
-        if x < 0:
-            raise MockException("fail")
-        return x * 2
-
-    with pytest.raises(PipelineError):
-        sometimes.run(-1)
-    assert counter.count == 1
-
-    time.sleep(0.15)
-
-    cancelled = Pipeline([sometimes])
-    cancelled.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        cancelled.run(5)
-    assert counter.count == 1
-
-    assert Pipeline([sometimes]).run(5) == 10
-    assert counter.count == 2
-
-
-def test_circuit_breaker_schema_failure_reopens_half_open():
-    """CR-3: schema failure on a half-open probe must re-open the breaker."""
-    counter = Counter()
-
-    @circuit_breaker(failure_threshold=1, recovery_timeout=0.1)
-    @piped(schema=int)
-    def probe(x):
-        counter.increment()
-        if x < 0:
-            raise MockException("fail")
-        return "wrong-type"
-
-    with pytest.raises(PipelineError):
-        probe.run(-1)
-    assert counter.count == 1
-
-    time.sleep(0.15)
-
-    with pytest.raises(PipelineError):
-        probe.run(5)
-    assert counter.count == 2
-
-    with pytest.raises(PipelineError):
-        probe.run(99)
-    assert counter.count == 2
-
-
-# =============================================================================
-# Configurable pools
-# =============================================================================
-
-def test_configure_pools_respects_max_workers():
-    from pipeline import configure_pools, cleanup_pools
-    from stepcraft.pools import _get_pool
-
-    cleanup_pools()
-    configure_pools(thread_workers=2)
-    try:
-        pool = _get_pool('thread')
-        assert pool._max_workers == 2
-    finally:
-        cleanup_pools()
-        configure_pools(thread_workers=None, process_workers=None)
-
-
-# =============================================================================
 # cancel_on_timeout
 # =============================================================================
 
@@ -2095,160 +1810,6 @@ def test_cancel_on_timeout_still_raises():
 
     with pytest.raises(PipelineError):
         slow.run(1)
-
-
-# =============================================================================
-# Pipeline shared context
-# =============================================================================
-
-def test_pipeline_shared_context():
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped
-    def step(x):
-        seen.update(get_context())
-        return x + 1
-
-    p = Pipeline([step], context={"request_id": "abc"})
-    assert p.run(1) == 2
-    assert seen["request_id"] == "abc"
-
-
-def test_context_reset_after_run():
-    from pipeline import get_context
-
-    p = Pipeline([piped(lambda x: x)], context={"k": "v"})
-    p.run(1)
-    assert get_context() == {}
-
-
-def test_node_setup_reads_context():
-    from pipeline import get_context
-
-    captured = {}
-
-    class N(Node):
-        def setup(self):
-            captured.update(get_context())
-
-        def process(self, x):
-            return x
-
-    Pipeline([N()], context={"u": 1}).run(5)
-    assert captured["u"] == 1
-
-
-def test_context_merged_on_compose():
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped
-    def step(x):
-        seen.update(get_context())
-        return x
-
-    left = Pipeline([piped(lambda x: x)], context={"a": 1})
-    right = Pipeline([step], context={"b": 2})
-    (left | right).run(0)
-    assert seen == {"a": 1, "b": 2}
-
-
-def test_context_async():
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped
-    async def step(x):
-        seen.update(get_context())
-        return x
-
-    p = Pipeline([step], context={"trace": "xyz"})
-    asyncio.run(p.async_run(0))
-    assert seen["trace"] == "xyz"
-
-
-def test_context_parallel_thread():
-    from pipeline import get_context
-
-    seen = []
-
-    @piped(parallel='thread')
-    def step(x):
-        seen.append(dict(get_context()))
-        return x * 2
-
-    p = Pipeline([step], context={"request_id": "par"})
-    assert p.run([1, 2, 3]) == [2, 4, 6]
-    assert all(item["request_id"] == "par" for item in seen)
-
-
-def test_context_timeout_thread_pool():
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped(timeout=1.0)
-    def step(x):
-        seen.update(get_context())
-        return x + 1
-
-    p = Pipeline([step], context={"tid": "timeout"})
-    assert p.run(1) == 2
-    assert seen["tid"] == "timeout"
-
-
-def test_context_async_sync_step_in_executor():
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped
-    def step(x):
-        seen.update(get_context())
-        return x + 1
-
-    p = Pipeline([step], context={"async_exec": "yes"})
-    asyncio.run(p.async_run(4))
-    assert seen["async_exec"] == "yes"
-
-
-def test_graph_shared_context():
-    """CR-4: Graph.run must activate shared context like Pipeline."""
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped
-    def inc(x):
-        seen.update(get_context())
-        return x + 1
-
-    g = Graph(context={"graph_id": "dag"})
-    g.add_node("a", inc)
-    results = g.run(seed=5)
-    assert results["a"] == 6
-    assert seen["graph_id"] == "dag"
-
-
-def test_graph_shared_context_async():
-    from pipeline import get_context
-
-    seen = {}
-
-    @piped
-    async def inc(x):
-        seen.update(get_context())
-        return x + 1
-
-    g = Graph(context={"mode": "async"})
-    g.add_node("a", inc)
-    results = asyncio.run(g.async_run(seed=3, parallel=False))
-    assert results["a"] == 4
-    assert seen["mode"] == "async"
 
 
 # =============================================================================

@@ -378,6 +378,8 @@ Exemptions and opt-outs:
 - **Lambdas are exempt** — they cannot carry annotations.
 - `@piped(require_annotations=False)` / `@node(require_annotations=False)` opts a
   single step out.
+- `@piped(typecheck=False)` skips beartype on that step while keeping annotations
+  required (unless you also opt out of annotations).
 - On a `Node` subclass, set `require_annotations = False` as a class attribute.
 
 For explicit, beartype-independent output validation use `@piped(schema=int)`;
@@ -428,12 +430,45 @@ pipeline.async_run(seed, on_step=hook)    # Execute asynchronously
 pipeline.run_async(seed)                  # async_run via uvloop (when installed)
 pipeline.run_detailed(seed, on_step=hook) # Execute with timing/history
 pipeline.async_run_detailed(seed)         # Async timing/history
-pipeline.map(items)          # Apply to each item
-pipeline.async_map(items)    # Apply to each item (async)
-pipeline.map_async(items)    # async_map via uvloop (when installed)
+pipeline.map(items)                       # Apply to each item
+pipeline.map(items, parallel=True)        # Thread-pool parallel map
+pipeline.map(items, parallel=4)           # Bounded thread concurrency
+pipeline.async_map(items)                 # Apply to each item (async)
+pipeline.async_map(items, max_concurrency=32)  # Cap in-flight async runs
+pipeline.map_async(items)                 # async_map via uvloop (when installed)
 pipeline.cancel()            # Cancel running pipeline
 len(pipeline)                # Number of steps
 pipeline[0]                  # Access step by index
+```
+
+### Production performance tuning
+
+Recommended install for throughput workloads:
+
+```bash
+pip install "stepcraft[all]"   # numpy, numba, uvloop, pyyaml
+```
+
+Tuning checklist:
+
+| Workload | Setting |
+|---|---|
+| I/O-bound list processing | `@piped(parallel='thread')` or `pipeline.map(items, parallel=True)` |
+| CPU-bound, pickleable funcs | `@piped(parallel='process')` with module-level functions |
+| Free-threaded CPython 3.14t | `parallel='auto'` (threads already parallelize CPU work) |
+| Large async fan-out | `pipeline.async_map(..., max_concurrency=32)` or `@piped(max_concurrency=32)` |
+| Expensive one-time setup | `class MyNode(Node): setup_once = True` |
+| Hot inner loops | `STEPCRAFT_NO_BEARTYPE=1` or `@piped(typecheck=False)` |
+| Pool sizing | `configure_pools(thread_workers=8, process_workers=4)` then `cleanup_pools()` to apply |
+| DAG parallelism | `Graph.run(parallel=True)` / `Graph.async_run(parallel=True)` |
+| Chunked transforms | `@piped(batch_size=N)` (do not combine with `parallel`) |
+
+```python
+from stepcraft import configure_pools, cleanup_pools
+
+configure_pools(thread_workers=8, process_workers=4)
+# Recreate pools after changing worker counts:
+cleanup_pools()
 ```
 
 ## Development

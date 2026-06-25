@@ -13,6 +13,9 @@ class Node(abc.ABC):
     # Require every subclass that defines `process` to fully annotate it.
     # Set ``require_annotations = False`` on a subclass to opt it out.
     require_annotations: bool = True
+    # When True, ``setup()`` runs once per pipeline run and ``teardown()`` runs
+    # when the pipeline exits (not after every ``run()`` call).
+    setup_once: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -24,12 +27,25 @@ class Node(abc.ABC):
         assert_fully_annotated(process, name=f"{cls.__name__}.process")
 
     def setup(self) -> None:
-        """Called once before first execution. Override for initialization."""
+        """Called before execution. Override for initialization."""
         pass
 
     def teardown(self) -> None:
         """Called after execution completes. Override for cleanup."""
         pass
+
+    def _ensure_setup(self) -> None:
+        if self.setup_once:
+            if not getattr(self, '_setup_active', False):
+                self.setup()
+                self._setup_active = True
+        else:
+            self.setup()
+
+    def _teardown_once(self) -> None:
+        if getattr(self, '_setup_active', False):
+            self.teardown()
+            self._setup_active = False
 
     @abc.abstractmethod
     def process(self, *args, **kwargs) -> Any:
@@ -37,26 +53,36 @@ class Node(abc.ABC):
         ...
 
     def run(self, input_value: Any = PIPE) -> Any:
-        self.setup()
+        self._ensure_setup()
         try:
             if input_value is PIPE:
-                return self.process()
-            return self.process(input_value)
-        finally:
-            self.teardown()
+                result = self.process()
+            else:
+                result = self.process(input_value)
+            if not self.setup_once:
+                self.teardown()
+            return result
+        except Exception:
+            if not self.setup_once:
+                self.teardown()
+            raise
 
     async def async_run(self, input_value: Any = PIPE) -> Any:
-        self.setup()
+        self._ensure_setup()
         try:
             if input_value is PIPE:
                 result = self.process()
             else:
                 result = self.process(input_value)
             if asyncio.iscoroutine(result):
-                return await result
+                result = await result
+            if not self.setup_once:
+                self.teardown()
             return result
-        finally:
-            self.teardown()
+        except Exception:
+            if not self.setup_once:
+                self.teardown()
+            raise
 
     @property
     def _func_name(self) -> str:
