@@ -10,6 +10,19 @@ from .constants import PIPE
 class Node(abc.ABC):
     """Abstract base class for OOP-style pipeline steps."""
 
+    # Require every subclass that defines `process` to fully annotate it.
+    # Set ``require_annotations = False`` on a subclass to opt it out.
+    require_annotations: bool = True
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        process = cls.__dict__.get("process")
+        if process is None or not getattr(cls, "require_annotations", True):
+            return
+        from .typecheck import assert_fully_annotated
+
+        assert_fully_annotated(process, name=f"{cls.__name__}.process")
+
     def setup(self) -> None:
         """Called once before first execution. Override for initialization."""
         pass

@@ -6,15 +6,18 @@ Composable function pipeline framework for Python. Pipe functions with `|`, buil
 from stepcraft import piped
 
 @piped
-def add_one(x):
+def add_one(x: int) -> int:
     return x + 1
 
 @piped
-def double(x):
+def double(x: int) -> int:
     return x * 2
 
 result = (add_one | double).run(5)  # 12
 ```
+
+> stepcraft requires every `@piped`/`@node` function (and `Node` subclass) to be
+> fully type-annotated by default — see [Type annotations](#type-annotations).
 
 ## Installation
 
@@ -48,15 +51,15 @@ pip install stepcraft[all]      # numpy + numba + uvloop
 from stepcraft import piped, PIPE
 
 @piped
-def fetch(url):
+def fetch(url: str) -> dict:
     return requests.get(url).json()
 
 @piped
-def extract(data):
+def extract(data: dict) -> list:
     return data["results"]
 
 @piped(parallel='thread')
-def process(items):
+def process(items: list) -> list:
     return [transform(i) for i in items]
 
 pipeline = fetch | extract | process
@@ -89,13 +92,13 @@ treated as structural values and are never split (e.g. graph fan-in).
 
 ```python
 @piped
-def double(x):
+def double(x: int) -> int:
     return x * 2
 
 double.run([1, 2, 3])              # [2, 4, 6]  — auto-mapped
 
 @piped(map=False)
-def total(xs):
+def total(xs: list) -> int:
     return sum(xs)
 
 total.run([1, 2, 3])              # 6  — whole list
@@ -119,7 +122,7 @@ class DatabaseWriter(Node):
     def teardown(self):
         self.conn.close()
 
-    def process(self, records):
+    def process(self, records: list) -> int:
         self.conn.insert_many(records)
         return len(records)
 
@@ -133,7 +136,7 @@ Quick nodes with the `@node` decorator:
 from stepcraft import node
 
 @node
-def double(x):
+def double(x: int) -> int:
     return x * 2
 ```
 
@@ -143,7 +146,7 @@ def double(x):
 from stepcraft import PIPE
 
 @piped
-def add(a, b):
+def add(a: int, b: int) -> int:
     return a + b
 
 add(3, PIPE).run(5)       # 8 -> add(3, 5)
@@ -232,7 +235,7 @@ from stepcraft import retry, circuit_breaker
 @circuit_breaker(failure_threshold=3, recovery_timeout=60)
 @retry(max_attempts=5, delay=0.5, backoff=2)
 @piped
-def call_api(data):
+def call_api(data: dict) -> dict:
     return requests.post(url, json=data).json()
 ```
 
@@ -248,7 +251,7 @@ pip install stepcraft[uvloop]
 from stepcraft import piped, run_async
 
 @piped
-async def fetch(url):
+async def fetch(url: str) -> dict:
     async with aiohttp.ClientSession() as s:
         return await (await s.get(url)).json()
 
@@ -352,12 +355,11 @@ from stepcraft import (
 configure_pools(thread_workers=8, process_workers=4)
 ```
 
-### Runtime type-checking (beartype)
+### Type annotations
 
-`@piped` and `@node` step functions are wrapped with
-[beartype](https://beartype.readthedocs.io/) so **arguments and return values**
-are checked against your type hints at runtime. Annotate inputs and the return
-type on the function itself:
+**Annotations are required by default.** Every `@piped`/`@node` function and
+every `Node` subclass's `process` must annotate all parameters and the return
+value, or stepcraft raises `MissingAnnotationError` at decoration time:
 
 ```python
 @piped
@@ -365,11 +367,24 @@ def add_tax(amount: float, rate: float = 0.1) -> float:
     return amount * (1 + rate)
 ```
 
-You can also enforce output with `@piped(schema=int)` or rely on a `-> int`
-return annotation (both are checked). The implicit numeric tower is enabled, so
-`int` is accepted where `float` is annotated.
+Those annotations are then enforced at runtime by
+[beartype](https://beartype.readthedocs.io/): arguments and the return value are
+checked on every call (including each element of an auto-mapped / parallel run).
+The implicit numeric tower is enabled, so `int` is accepted where `float` is
+annotated.
 
-Disable runtime checks when needed:
+Exemptions and opt-outs:
+
+- **Lambdas are exempt** — they cannot carry annotations.
+- `@piped(require_annotations=False)` / `@node(require_annotations=False)` opts a
+  single step out.
+- On a `Node` subclass, set `require_annotations = False` as a class attribute.
+
+For explicit, beartype-independent output validation use `@piped(schema=int)`;
+under auto-map/parallel the schema is checked per element.
+
+Disable runtime type-checking entirely when needed (annotations are still
+required unless you also opt out per step):
 
 ```bash
 STEPCRAFT_NO_BEARTYPE=1 python my_app.py

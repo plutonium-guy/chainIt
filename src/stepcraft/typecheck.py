@@ -1,7 +1,41 @@
 from __future__ import annotations
 
+import inspect
 import os
 from typing import Any, Callable, Optional
+
+from .exceptions import MissingAnnotationError
+
+
+def is_lambda(func: Callable[..., Any]) -> bool:
+    return getattr(func, "__name__", None) == "<lambda>"
+
+
+def assert_fully_annotated(func: Callable[..., Any], *, name: Optional[str] = None) -> None:
+    """Raise MissingAnnotationError unless every parameter and the return of
+    *func* is annotated. Lambdas are exempt (they cannot carry annotations);
+    ``self``/``cls`` and ``*args``/``**kwargs`` do not require annotations.
+    """
+    if is_lambda(func):
+        return
+    try:
+        sig = inspect.signature(func)
+    except (ValueError, TypeError):
+        return  # builtins / C callables expose no signature — cannot enforce
+    missing: list[str] = []
+    for pname, param in sig.parameters.items():
+        if pname in ("self", "cls"):
+            continue
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        if param.annotation is inspect.Parameter.empty:
+            missing.append(pname)
+    if sig.return_annotation is inspect.Signature.empty:
+        missing.append("return")
+    if missing:
+        raise MissingAnnotationError(
+            name or getattr(func, "__name__", repr(func)), missing
+        )
 
 try:
     from beartype import BeartypeConf, beartype as _beartype_decorator

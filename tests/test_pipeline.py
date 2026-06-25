@@ -7,9 +7,31 @@ from pipeline import (
     PIPE, Pipeline, piped, retry, circuit_breaker,
     FanOutStep, FanInStep, PipelineError, ExecutionResult,
     PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
-    SwitchStep, Graph, GraphCycleError,
+    SwitchStep, Graph, GraphCycleError, MissingAnnotationError,
     HAS_UVLOOP, run_async, install_uvloop, uninstall_uvloop, uvloop_policy,
 )
+
+# ---------------------------------------------------------------------------
+# stepcraft requires full type annotations on @piped/@node/Node by default.
+# These pre-existing tests exercise *other* behaviour with unannotated
+# functions, so we centrally opt them out here. The dedicated enforcement tests
+# below use the strict (real) decorators via `strict_*`.
+# ---------------------------------------------------------------------------
+strict_piped, strict_node, StrictNode = piped, node, Node
+
+
+def piped(func=None, **kwargs):  # noqa: F811 - intentional test-wide shim
+    kwargs.setdefault("require_annotations", False)
+    return strict_piped(func, **kwargs) if func is not None else strict_piped(**kwargs)
+
+
+def node(func=None, **kwargs):  # noqa: F811 - intentional test-wide shim
+    kwargs.setdefault("require_annotations", False)
+    return strict_node(func, **kwargs) if func is not None else strict_node(**kwargs)
+
+
+class Node(StrictNode):  # noqa: F811 - intentional test-wide shim
+    require_annotations = False
 
 # Try numpy — skip tests that need it if missing
 try:
@@ -2288,6 +2310,95 @@ def test_shim_exports_new_apis():
     import pipeline
     for name in ("get_context", "configure_pools", "StepHook"):
         assert hasattr(pipeline, name), f"pipeline shim missing {name}"
+
+
+# =============================================================================
+# Annotation enforcement (strict by default)
+# =============================================================================
+
+def test_piped_requires_annotations_by_default():
+    with pytest.raises(MissingAnnotationError):
+        @strict_piped
+        def no_anno(x):
+            return x
+
+
+def test_piped_requires_return_annotation():
+    with pytest.raises(MissingAnnotationError) as exc:
+        @strict_piped
+        def no_return(x: int):
+            return x
+    assert "return" in str(exc.value)
+
+
+def test_piped_fully_annotated_ok():
+    @strict_piped
+    def good(x: int) -> int:
+        return x + 1
+
+    assert good.run(1) == 2
+
+
+def test_piped_require_annotations_false_opts_out():
+    @strict_piped(require_annotations=False)
+    def loose(x):
+        return x
+
+    assert loose.run(5) == 5
+
+
+def test_piped_lambda_is_exempt():
+    step = strict_piped(lambda x: x * 2)  # lambdas cannot be annotated
+    assert step.run(3) == 6
+
+
+def test_piped_varargs_need_no_annotation():
+    # *args / **kwargs need no annotation; only named params and return do.
+    @strict_piped
+    def variadic(*args, **kwargs) -> int:
+        return sum(args)
+
+    assert variadic.run(5) == 5  # variadic(5) -> sum((5,))
+
+
+def test_node_decorator_requires_annotations():
+    with pytest.raises(MissingAnnotationError):
+        @strict_node
+        def bad(x):
+            return x
+
+
+def test_node_decorator_annotated_ok():
+    @strict_node
+    def good(x: int) -> int:
+        return x * 2
+
+    assert good.run(4) == 8
+
+
+def test_node_subclass_requires_annotations():
+    with pytest.raises(MissingAnnotationError):
+        class Bad(StrictNode):
+            def process(self, x):
+                return x
+
+
+def test_node_subclass_opt_out():
+    class Loose(StrictNode):
+        require_annotations = False
+
+        def process(self, x):
+            return x
+
+    assert Loose().run(7) == 7
+
+
+def test_node_subclass_annotated_ok():
+    class Good(StrictNode):
+        def process(self, x: int) -> int:
+            return x + 1
+
+    assert Good().run(1) == 2
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from .decorators import circuit_breaker, node, piped, retry
 from .exceptions import (
     CircuitBreakerError,
     GraphCycleError,
+    MissingAnnotationError,
     PipelineError,
     RetryExhaustedError,
 )
@@ -50,6 +51,7 @@ __all__ = [
     'get_context',
     # Errors
     'PipelineError', 'RetryExhaustedError', 'CircuitBreakerError', 'GraphCycleError',
+    'MissingAnnotationError',
     # Utilities
     'cleanup_pools', 'configure_pools', 'HAS_NUMPY', 'HAS_UVLOOP', 'HAS_FREE_THREADING',
     'is_gil_enabled', 'threads_provide_true_parallelism',

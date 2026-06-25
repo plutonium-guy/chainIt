@@ -6,7 +6,7 @@ from .config import CircuitBreakerConfig, RetryConfig
 from .constants import HAS_NUMPY, logger, np
 from .node import Node
 from .step import PipeStep
-from .typecheck import apply_step_beartype, resolve_output_schema
+from .typecheck import apply_step_beartype, assert_fully_annotated, resolve_output_schema
 from .utils import _get_func_name
 
 
@@ -22,15 +22,21 @@ def piped(
     schema: Optional[type] = None,
     jit: bool = False,
     vectorize: bool = False,
+    require_annotations: bool = True,
 ) -> Union[PipeStep, Callable[[Callable], PipeStep]]:
     """Create a PipeStep from a function.
 
     ``map`` is a README-friendly alias for ``auto_map``; when given it wins.
+
+    By default every parameter and the return value must be type-annotated
+    (lambdas are exempt). Pass ``require_annotations=False`` to opt out.
     """
     if map is not None:
         auto_map = map
 
     def decorator(f: Callable) -> PipeStep:
+        if require_annotations:
+            assert_fully_annotated(f, name=_get_func_name(f))
         if parallel and batch_size > 1:
             logger.warning(
                 "%s: parallel=%r takes precedence over batch_size=%d; "
@@ -132,14 +138,24 @@ def node(
     *,
     setup: Optional[Callable] = None,
     teardown: Optional[Callable] = None,
+    require_annotations: bool = True,
 ) -> Union[Node, Callable[[Callable], Node]]:
-    """Decorator to create a Node from a function."""
+    """Decorator to create a Node from a function.
+
+    Like ``@piped``, the wrapped function must be fully type-annotated by
+    default (lambdas exempt); pass ``require_annotations=False`` to opt out.
+    """
 
     def decorator(f: Callable) -> Node:
         display_name = _get_func_name(f)
+        if require_annotations:
+            assert_fully_annotated(f, name=display_name)
         checked = apply_step_beartype(f)
 
         class FuncNode(Node):
+            # f is validated above; the generic *args wrapper is exempt.
+            require_annotations = False
+
             @property
             def _func_name(self) -> str:
                 return display_name
