@@ -36,6 +36,7 @@ all = ["numpy", "numba", "rsloop", "pyyaml"]
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-timeout>=2.3",
     "numpy",
     "pyyaml",
 ]
@@ -53,6 +54,9 @@ pythonpath = [
     "src",
     ".",
 ]
+# Fail a hung test in 60s (and dump its traceback) instead of blocking CI for
+# hours. Thread method works cross-platform incl. blocking C calls.
+addopts = "--timeout=60 --timeout-method=thread"
 filterwarnings = [
     "ignore:.*:beartype.roar.BeartypeDecorHintPep585DeprecationWarning",
 ]

@@ -49,9 +49,19 @@ def _get_pool(kind: str) -> Union[ThreadPoolExecutor, ProcessPoolExecutor]:
 
 
 def cleanup_pools(*, wait: bool = True) -> None:
-    """Clean up thread/process pools."""
+    """Clean up thread/process pools.
+
+    Process pools are always torn down without blocking
+    (``wait=False, cancel_futures=True``): joining spawn-based worker
+    processes can hang indefinitely on Linux when a worker is wedged, which
+    is what caused CI to hang for 6h in ``cleanup_pools()``. Thread pools
+    honor *wait* since joining threads is cheap and safe.
+    """
     for pool in list(_POOLS.values()):
-        pool.shutdown(wait=wait, cancel_futures=not wait)
+        if isinstance(pool, ProcessPoolExecutor):
+            pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            pool.shutdown(wait=wait, cancel_futures=not wait)
     _POOLS.clear()
 
 

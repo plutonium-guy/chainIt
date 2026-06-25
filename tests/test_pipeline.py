@@ -1012,9 +1012,11 @@ def test_context_manager_cleanup():
 
 
 def test_timeout_enforced():
+    # Large margin (0.1s timeout vs 2s work) so a loaded CI runner cannot let
+    # the call finish before the timeout fires.
     @piped(timeout=0.1)
     def slow(x):
-        time.sleep(0.2)
+        time.sleep(2.0)
         return x
 
     with pytest.raises(PipelineError):
