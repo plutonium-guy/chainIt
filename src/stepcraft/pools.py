@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 from typing import Dict, Optional, Union
@@ -36,7 +35,9 @@ def _get_pool(kind: str) -> Union[ThreadPoolExecutor, ProcessPoolExecutor]:
     kind = resolve_parallel_kind(kind) or kind
     if kind not in _POOLS:
         if kind == "process":
-            ctx = get_context("spawn" if sys.platform in ("darwin", "win32") else "fork")
+            # Always use spawn: fork() in a multi-threaded parent (common after
+            # thread-pool tests or library threads) triggers deadlocks on 3.13+.
+            ctx = get_context("spawn")
             _POOLS[kind] = ProcessPoolExecutor(
                 max_workers=_POOL_CONFIG["process_workers"], mp_context=ctx
             )

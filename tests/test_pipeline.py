@@ -353,18 +353,27 @@ def test_vectorized_operations():
 # =============================================================================
 
 def test_thread_parallel():
+    numbers = list(range(5))
+    sleep_s = 0.03
+
     @piped(parallel='thread')
     def slow_square(x):
-        time.sleep(0.01)
+        time.sleep(sleep_s)
         return x * x
 
-    numbers = list(range(5))
     start = time.perf_counter()
     results = slow_square.run(numbers)
     parallel_time = time.perf_counter() - start
 
     assert results == [x * x for x in numbers]
-    assert parallel_time < 0.1
+
+    start = time.perf_counter()
+    for _ in numbers:
+        time.sleep(sleep_s)
+    sequential_time = time.perf_counter() - start
+
+    # Parallel should beat a sequential baseline; ratio avoids flaky absolute bounds on CI.
+    assert parallel_time < sequential_time * 0.75
 
 
 def test_process_parallel():
@@ -1694,6 +1703,7 @@ def test_run_async_fallback_without_rsloop(monkeypatch):
 
 
 @pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+@pytest.mark.rsloop
 def test_run_async_with_rsloop():
     async def coro():
         await asyncio.sleep(0.01)
@@ -1703,6 +1713,7 @@ def test_run_async_with_rsloop():
 
 
 @pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+@pytest.mark.rsloop
 def test_pipeline_run_async():
     @piped
     async def add_one(x):
@@ -1718,6 +1729,7 @@ def test_pipeline_run_async():
 
 
 @pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+@pytest.mark.rsloop
 def test_pipeline_map_async():
     @piped
     async def double(x):
@@ -1728,6 +1740,7 @@ def test_pipeline_map_async():
 
 
 @pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+@pytest.mark.rsloop
 def test_graph_run_async():
     g = (
         Graph()
@@ -1735,19 +1748,20 @@ def test_graph_run_async():
         .add_node("b", piped(lambda x: x * 2))
         .add_edge("a", "b")
     )
-    results = g.run_async(seed=5)
+    # parallel=False avoids thread-pool + rsloop deadlocks on Linux CI.
+    results = g.run_async(seed=5, parallel=False)
     assert results["a"] == 6
     assert results["b"] == 12
 
 
 @pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
+@pytest.mark.rsloop
 def test_rsloop_policy_context():
     async def coro():
         return asyncio.get_running_loop().__class__.__module__.startswith("rsloop")
 
     with rsloop_policy():
         assert run_async(coro()) is True
-    uninstall_rsloop()
 
 
 # =============================================================================

@@ -56,3 +56,6 @@ pythonpath = [
 filterwarnings = [
     "ignore:.*:beartype.roar.BeartypeDecorHintPep585DeprecationWarning",
 ]
+markers = [
+    "rsloop: integration tests that require rsloop installed",
+]

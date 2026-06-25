@@ -60,6 +60,7 @@ jobs:
 
   test-rsloop:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -77,4 +78,4 @@ jobs:
 
       - name: Run rsloop tests
         run: |
-          uv run pytest tests/ -v -k "rsloop or run_async"
+          uv run pytest tests/ -v -m rsloop
