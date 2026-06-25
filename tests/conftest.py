@@ -24,7 +24,7 @@ def pytest_unconfigure(config):
 
     Even with all tests passing, the process can hang at interpreter exit on
     Linux: leaked spawn-based ProcessPoolExecutor workers and native-extension
-    runtime threads (e.g. rsloop's) are not always joined, leaving a CI step
+    runtime threads (e.g. uvloop's) are not always joined, leaving a CI step
     hanging for hours after a green run. Running last — after the terminal
     summary is printed — we flush and hard-exit with the pytest status code.
     """
