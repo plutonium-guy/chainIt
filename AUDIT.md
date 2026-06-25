@@ -1,4 +1,4 @@
-# pipecraft Audit — Bugs & Incomplete Features
+# stepcraft Audit — Bugs & Incomplete Features
 
 Audit date: 2026-06-24. Based on code review, runtime reproduction, and test coverage analysis.
 Updated 2026-06-25 with findings from the multi-agent code-review pass on the
@@ -154,7 +154,7 @@ await process_batch.async_run([1, 2, 3, 4])
 # -> [<coroutine ...>, <coroutine ...>]  # RuntimeWarning: never awaited
 ```
 
-**Location:** `src/pipecraft/step.py` — `_invoke_function_async` → `_execute_batched`
+**Location:** `src/stepcraft/step.py` — `_invoke_function_async` → `_execute_batched`
 
 **Impact:** `async_run` silently returns coroutine objects instead of results.
 
@@ -173,7 +173,7 @@ await f.async_run([1, 2, 3])
 # -> [<coroutine ...>, <coroutine ...>, <coroutine ...>]
 ```
 
-**Location:** `src/pipecraft/step.py` — `_execute_parallel_async`
+**Location:** `src/stepcraft/step.py` — `_execute_parallel_async`
 
 **Impact:** `parallel` + async steps are broken on the async execution path. Sync `run()` is fine (thread pool runs sync callables).
 
@@ -184,7 +184,7 @@ await f.async_run([1, 2, 3])
 If a branch has `.run` but not `.async_run`, and `run()` returns a coroutine, it is returned without awaiting.
 
 ```python
-# src/pipecraft/utils.py
+# src/stepcraft/utils.py
 async def _async_run_branch_value(branch, value):
     ...
     if hasattr(branch, 'run'):
@@ -219,7 +219,7 @@ pipeline.run([1, 2, 3])  # step receives [1,2,3], not three scalars
 
 | Feature | Status |
 |--------|--------|
-| `Pipeline.from_spec("yaml")` | ✅ Implemented (`spec.py`, `pipecraft[spec]`) |
+| `Pipeline.from_spec("yaml")` | ✅ Implemented (`spec.py`, `stepcraft[spec]`) |
 | `Graph.from_spec("yaml")` | ✅ Implemented — `graph:` block with `nodes`/`edges` |
 | `FanOutStep.async_run` + `parallel=` | ✅ Honors `parallel` on the async path |
 | `MapReduceStep.async_run` | ✅ Async mappers mapped concurrently per batch |

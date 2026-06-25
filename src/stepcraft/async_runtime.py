@@ -26,7 +26,7 @@ def install_rsloop() -> None:
     """Install rsloop as the default asyncio event loop policy."""
     if not HAS_RSLOOP:
         raise ImportError(
-            "rsloop is not installed. Install with: pip install pipecraft[rsloop]"
+            "rsloop is not installed. Install with: pip install stepcraft[rsloop]"
         )
     rsloop.install()
 
@@ -35,7 +35,7 @@ def uninstall_rsloop() -> None:
     """Restore the previous asyncio event loop policy."""
     if not HAS_RSLOOP:
         raise ImportError(
-            "rsloop is not installed. Install with: pip install pipecraft[rsloop]"
+            "rsloop is not installed. Install with: pip install stepcraft[rsloop]"
         )
     rsloop.uninstall()
 

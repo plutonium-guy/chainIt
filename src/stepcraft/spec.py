@@ -24,7 +24,7 @@ def _load_spec_file(spec_file: str | Path) -> dict:
         except ImportError as exc:
             raise ImportError(
                 "PyYAML is required to load YAML pipeline specs. "
-                "Install with: pip install pipecraft[spec]"
+                "Install with: pip install stepcraft[spec]"
             ) from exc
         data = yaml.safe_load(text)
     elif suffix == ".json":

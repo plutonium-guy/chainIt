@@ -152,62 +152,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pipecraft"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "beartype" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "pyyaml" },
-    { name = "rsloop" },
-]
-numba = [
-    { name = "numba" },
-]
-numpy = [
-    { name = "numpy" },
-]
-rsloop = [
-    { name = "rsloop" },
-]
-spec = [
-    { name = "pyyaml" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "numpy" },
-    { name = "pytest" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "beartype", specifier = ">=0.18" },
-    { name = "numba", marker = "extra == 'all'" },
-    { name = "numba", marker = "extra == 'numba'" },
-    { name = "numpy", marker = "extra == 'all'" },
-    { name = "numpy", marker = "extra == 'numpy'" },
-    { name = "pyyaml", marker = "extra == 'all'" },
-    { name = "pyyaml", marker = "extra == 'spec'" },
-    { name = "rsloop", marker = "extra == 'all'" },
-    { name = "rsloop", marker = "extra == 'rsloop'" },
-]
-provides-extras = ["numpy", "numba", "rsloop", "spec", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "numpy" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pyyaml" },
-]
-
-[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -317,4 +261,60 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7c/50/86d095e6d84c98a8a2b960d3a4243523e50e47a3749625a04036d6d54cc8/rsloop-0.1.19-cp314-cp314t-manylinux_2_39_x86_64.whl", hash = "sha256:3b52989f7683b340ea32927e93f46c1bf1a6807feabd8bfd14317abd35b22ed1", size = 2762006, upload-time = "2026-06-24T10:55:09.8Z" },
     { url = "https://files.pythonhosted.org/packages/ce/09/f3764b597d26d2c1b2efbdcb7540f2aa16dd956306d5181a73499a04eb86/rsloop-0.1.19-cp314-cp314t-win_amd64.whl", hash = "sha256:bf614cd8f27630c38eee661c5a36c667193079adf27628122ce43c5bd19c8a0a", size = 2198683, upload-time = "2026-06-24T10:55:11.51Z" },
     { url = "https://files.pythonhosted.org/packages/a5/cc/e5d7095d937dfb46f42476ddec0d6efb5f1cede1cdffc832393617e1aed9/rsloop-0.1.19-cp314-cp314t-win_arm64.whl", hash = "sha256:2bc467018fd82759d3adc5d0dd4e44b2aa7f7d9754112bb95972aa08351d2cdf", size = 2248899, upload-time = "2026-06-24T10:55:13.691Z" },
+]
+
+[[package]]
+name = "stepcraft"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "beartype" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "pyyaml" },
+    { name = "rsloop" },
+]
+numba = [
+    { name = "numba" },
+]
+numpy = [
+    { name = "numpy" },
+]
+rsloop = [
+    { name = "rsloop" },
+]
+spec = [
+    { name = "pyyaml" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "numpy" },
+    { name = "pytest" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beartype", specifier = ">=0.18" },
+    { name = "numba", marker = "extra == 'all'" },
+    { name = "numba", marker = "extra == 'numba'" },
+    { name = "numpy", marker = "extra == 'all'" },
+    { name = "numpy", marker = "extra == 'numpy'" },
+    { name = "pyyaml", marker = "extra == 'all'" },
+    { name = "pyyaml", marker = "extra == 'spec'" },
+    { name = "rsloop", marker = "extra == 'all'" },
+    { name = "rsloop", marker = "extra == 'rsloop'" },
+]
+provides-extras = ["numpy", "numba", "rsloop", "spec", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "numpy" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pyyaml" },
 ]

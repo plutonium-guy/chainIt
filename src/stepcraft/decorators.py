@@ -49,7 +49,7 @@ def piped(
             except ImportError:
                 logger.warning(
                     "jit=True on %s but numba is not installed; running without JIT. "
-                    "Install with: pip install pipecraft[numba]",
+                    "Install with: pip install stepcraft[numba]",
                     _get_func_name(f),
                 )
 
@@ -70,7 +70,7 @@ def piped(
                 logger.warning(
                     "vectorize=True on %s but neither numba nor numpy is available; "
                     "running without vectorization. "
-                    "Install with: pip install pipecraft[numba] or pipecraft[numpy]",
+                    "Install with: pip install stepcraft[numba] or stepcraft[numpy]",
                     _get_func_name(f),
                 )
 

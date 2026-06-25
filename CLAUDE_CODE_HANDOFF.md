@@ -1,4 +1,4 @@
-# pipecraft — Claude Code Handoff Plan
+# stepcraft — Claude Code Handoff Plan
 
 **Author:** Senior review / planning pass  
 **Date:** 2026-06-24  
@@ -17,7 +17,7 @@ This file is the **source of truth** for what is done, what was started tonight,
 | Async `parallel` awaits coroutines | Done | `step._execute_parallel_async` |
 | `_async_run_branch_value` awaits `run()` coroutines | Done | `utils.py` |
 | List auto-map on default `@piped` | Done | `step._should_auto_map`, lists only (not tuples) |
-| `Pipeline.from_spec` YAML/JSON | Done | `spec.py`, `pip install pipecraft[spec]` |
+| `Pipeline.from_spec` YAML/JSON | Done | `spec.py`, `pip install stepcraft[spec]` |
 | FanOut / MapReduce async parity | Done | `fan.py` |
 | jit/vectorize warnings | Done | `decorators.py` |
 | rsloop CI job | Done | `.github/workflows/ci.yml` `test-rsloop` |
@@ -72,7 +72,7 @@ await pipeline.async_run_detailed(seed, on_step=hook)
 ```
 
 **Files to add/touch:**
-- `src/pipecraft/hooks.py` — `StepHook` type alias, `_call_hook` helper
+- `src/stepcraft/hooks.py` — `StepHook` type alias, `_call_hook` helper
 - `pipeline.py` — optional `on_step` on run paths
 - `graph.py` — optional `on_step` on `run` / `async_run` (per node)
 - `tests/test_pipeline.py` — hook called N times, receives correct I/O
@@ -83,7 +83,7 @@ await pipeline.async_run_detailed(seed, on_step=hook)
 
 ### 2. Update `AUDIT.md` + `README.md`
 - Mark fixed bugs incomplete features as resolved
-- Document: `auto_map`, `parallel='auto'`, `from_spec`, free-threading, `pip install pipecraft[spec]`
+- Document: `auto_map`, `parallel='auto'`, `from_spec`, free-threading, `pip install stepcraft[spec]`
 - Add short “Parallelism” section: GIL vs 3.14t vs `process`
 
 ### 3. `@piped(map=False)` alias
@@ -175,7 +175,7 @@ graph:
 ## Suggested claude-code prompt (copy-paste)
 
 ```
-Read CLAUDE_CODE_HANDOFF.md fully. You are implementing pipecraft on branch working_barnch.
+Read CLAUDE_CODE_HANDOFF.md fully. You are implementing stepcraft on branch working_barnch.
 
 1. Verify items in "Started tonight" (A–C) — add missing tests, fix gaps.
 2. Implement Phase 1 items 1–3 (hooks, docs, map= alias).

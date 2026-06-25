@@ -7,7 +7,7 @@ High-effort multi-agent review. 40 candidates → 29 confirmed. Ranked most-seve
 - [x] **Circuit breaker opens too early** — fixed: `_record_failure()` moved out of `except`, called once after retries exhausted. Test `test_circuit_breaker_records_one_failure_per_logical_call`.
 - [x] **Async timeout ignores `timeout=0.0`** — fixed: async now `if self.timeout is not None:`. Test `test_async_timeout_zero_is_enforced`.
 - [x] **`parallel` + `batch_size` → batch never runs** — fixed (judgment: documented deterministic precedence, parallel wins; not raised because `test_pipestep_repr` constructs both). Comments in `_invoke_function`/`_invoke_function_async`.
-- [ ] **Whole-collection steps auto-mapped per-element** — `src/pipecraft/__init__.py` — NOT fixed (behavior change risks existing parallel/batch tests; deferred).
+- [ ] **Whole-collection steps auto-mapped per-element** — `src/stepcraft/__init__.py` — NOT fixed (behavior change risks existing parallel/batch tests; deferred).
 - [x] **`_execute_parallel` drops kwargs** — fixed: both parallel paths wrap in `functools.partial(self.func, **kwargs)`. Tests `test_parallel_forwards_kwargs_sync/_async`.
 - [x] **`_execute_batched` sums scalars across batches** — fixed: excluded `bool` from numeric-sum branch (kept sum for genuine numerics per existing tests). Test `test_batched_does_not_sum_booleans`.
 - [x] **`FanOutStep(parallel='process')` crashes — unpicklable lambda** — fixed: module-level `_run_branch_on` + `itertools.repeat`. Tests `test_fanout_thread_parallel`/`test_fanout_process_parallel`.

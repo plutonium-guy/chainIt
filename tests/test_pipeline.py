@@ -311,7 +311,7 @@ def test_jit_warns_without_numba(caplog, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with caplog.at_level(logging.WARNING, logger="pipecraft.constants"):
+    with caplog.at_level(logging.WARNING, logger="stepcraft.constants"):
         step = piped(jit=True)(lambda x: x + 1)
         assert step.run(2) == 3
     assert any("numba" in r.message.lower() for r in caplog.records)
@@ -319,7 +319,7 @@ def test_jit_warns_without_numba(caplog, monkeypatch):
 
 def test_vectorize_warns_without_numba_or_numpy(caplog, monkeypatch):
     import builtins
-    import pipecraft.decorators as dec
+    import stepcraft.decorators as dec
 
     monkeypatch.setattr(dec, "HAS_NUMPY", False)
     real_import = builtins.__import__
@@ -331,7 +331,7 @@ def test_vectorize_warns_without_numba_or_numpy(caplog, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with caplog.at_level(logging.WARNING, logger="pipecraft.constants"):
+    with caplog.at_level(logging.WARNING, logger="stepcraft.constants"):
         step = piped(vectorize=True)(lambda x: x * 2)
         assert step.run(3) == 6
     assert any("vectorize" in r.message.lower() for r in caplog.records)
@@ -379,7 +379,7 @@ def test_process_parallel():
 
 def test_parallel_process_uses_threads_on_free_threading(monkeypatch):
     """On 3.14+ free-threaded builds, process parallel maps to thread pools."""
-    import pipecraft.runtime as runtime
+    import stepcraft.runtime as runtime
 
     monkeypatch.setattr(runtime, "HAS_FREE_THREADING", True)
     monkeypatch.setattr(runtime, "is_gil_enabled", lambda: False)
@@ -393,7 +393,7 @@ def test_parallel_process_uses_threads_on_free_threading(monkeypatch):
 
 
 def test_parallel_auto_prefers_threads_on_free_threading(monkeypatch):
-    import pipecraft.runtime as runtime
+    import stepcraft.runtime as runtime
 
     monkeypatch.setattr(runtime, "HAS_FREE_THREADING", True)
     monkeypatch.setattr(runtime, "is_gil_enabled", lambda: False)
@@ -406,7 +406,7 @@ def test_parallel_auto_prefers_threads_on_free_threading(monkeypatch):
 
 
 def test_parallel_auto_uses_process_with_gil(monkeypatch):
-    import pipecraft.runtime as runtime
+    import stepcraft.runtime as runtime
 
     monkeypatch.setattr(runtime, "HAS_FREE_THREADING", False)
     monkeypatch.setattr(runtime, "is_gil_enabled", lambda: True)
@@ -416,7 +416,7 @@ def test_parallel_auto_uses_process_with_gil(monkeypatch):
 
 
 def test_free_threading_runtime_api():
-    from pipecraft import (
+    from stepcraft import (
         HAS_FREE_THREADING,
         is_gil_enabled,
         threads_provide_true_parallelism,
@@ -1149,7 +1149,7 @@ def test_piped_beartype_disabled_by_env(monkeypatch):
 def test_piped_parallel_batch_warns(caplog):
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="pipecraft"):
+    with caplog.at_level(logging.WARNING, logger="stepcraft"):
         @piped(parallel="thread", batch_size=4)
         def work(x):
             return x
@@ -1683,7 +1683,7 @@ def test_pipeline_shim_reexports():
 
 def test_run_async_fallback_without_rsloop(monkeypatch):
     """run_async falls back to asyncio.run when rsloop is unavailable."""
-    import pipecraft.async_runtime as ar
+    import stepcraft.async_runtime as ar
 
     monkeypatch.setattr(ar, "HAS_RSLOOP", False)
 
@@ -1855,7 +1855,7 @@ def test_on_step_hook_error_does_not_break_pipeline(caplog):
     def bad_hook(name, inp, out, dt):
         raise RuntimeError("hook boom")
 
-    with caplog.at_level(logging.WARNING, logger="pipecraft.hooks"):
+    with caplog.at_level(logging.WARNING, logger="stepcraft.hooks"):
         result = Pipeline([add_one]).run(5, on_step=bad_hook)
     assert result == 6
     assert any("hook" in r.message.lower() for r in caplog.records)
@@ -1993,7 +1993,7 @@ def test_circuit_breaker_schema_failure_reopens_half_open():
 
 def test_configure_pools_respects_max_workers():
     from pipeline import configure_pools, cleanup_pools
-    from pipecraft.pools import _get_pool
+    from stepcraft.pools import _get_pool
 
     cleanup_pools()
     configure_pools(thread_workers=2)

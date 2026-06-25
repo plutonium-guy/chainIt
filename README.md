@@ -1,9 +1,9 @@
-# pipecraft
+# stepcraft
 
 Composable function pipeline framework for Python. Pipe functions with `|`, build DAGs, branch conditionally, and run in parallel.
 
 ```python
-from pipecraft import piped
+from stepcraft import piped
 
 @piped
 def add_one(x):
@@ -19,15 +19,15 @@ result = (add_one | double).run(5)  # 12
 ## Installation
 
 ```bash
-pip install pipecraft
+pip install stepcraft
 ```
 
 For optional dependencies:
 
 ```bash
-pip install pipecraft[numpy]    # numpy support
-pip install pipecraft[rsloop]   # fast Rust asyncio event loop
-pip install pipecraft[all]      # numpy + numba + rsloop
+pip install stepcraft[numpy]    # numpy support
+pip install stepcraft[rsloop]   # fast Rust asyncio event loop
+pip install stepcraft[all]      # numpy + numba + rsloop
 ```
 
 ## Features
@@ -45,7 +45,7 @@ pip install pipecraft[all]      # numpy + numba + rsloop
 ### Function Pipelines
 
 ```python
-from pipecraft import piped, PIPE
+from stepcraft import piped, PIPE
 
 @piped
 def fetch(url):
@@ -106,7 +106,7 @@ total.run([1, 2, 3])              # 6  — whole list
 Subclass `Node` for reusable components with lifecycle hooks:
 
 ```python
-from pipecraft import Node
+from stepcraft import Node
 
 class DatabaseWriter(Node):
     def __init__(self, connection_string):
@@ -130,7 +130,7 @@ pipeline.run("https://api.example.com/data")
 Quick nodes with the `@node` decorator:
 
 ```python
-from pipecraft import node
+from stepcraft import node
 
 @node
 def double(x):
@@ -140,7 +140,7 @@ def double(x):
 ### Argument Injection with PIPE
 
 ```python
-from pipecraft import PIPE
+from stepcraft import PIPE
 
 @piped
 def add(a, b):
@@ -153,7 +153,7 @@ add(a=PIPE, b=10).run(5)  # 15 -> add(5, 10)
 ### Conditional Branching
 
 ```python
-from pipecraft import ConditionalStep, SwitchStep
+from stepcraft import ConditionalStep, SwitchStep
 
 # If/else
 cond = ConditionalStep(
@@ -178,7 +178,7 @@ pipeline = normalize | switch | format_output
 ### DAG Execution
 
 ```python
-from pipecraft import Graph
+from stepcraft import Graph
 
 g = (
     Graph()
@@ -215,7 +215,7 @@ print(g.describe())
 ### Fan-out / Fan-in
 
 ```python
-from pipecraft import FanOutStep, FanInStep
+from stepcraft import FanOutStep, FanInStep
 
 pipeline = (
     FanOutStep((branch_a, branch_b), parallel='thread')
@@ -227,7 +227,7 @@ result = pipeline.run(input_data)
 ### Reliability
 
 ```python
-from pipecraft import retry, circuit_breaker
+from stepcraft import retry, circuit_breaker
 
 @circuit_breaker(failure_threshold=3, recovery_timeout=60)
 @retry(max_attempts=5, delay=0.5, backoff=2)
@@ -241,11 +241,11 @@ def call_api(data):
 Every component supports async. For better performance, install [rsloop](https://github.com/RustedBytes/rsloop) (Rust asyncio event loop):
 
 ```bash
-pip install pipecraft[rsloop]
+pip install stepcraft[rsloop]
 ```
 
 ```python
-from pipecraft import piped, run_async
+from stepcraft import piped, run_async
 
 @piped
 async def fetch(url):
@@ -265,7 +265,7 @@ result = run_async(pipeline.async_run("https://api.example.com"))
 You can also install rsloop as the default event loop policy:
 
 ```python
-from pipecraft import rsloop_policy
+from stepcraft import rsloop_policy
 
 with rsloop_policy():
     result = run_async(pipeline.async_run(seed))
@@ -273,10 +273,10 @@ with rsloop_policy():
 
 ### Declarative specs (YAML / JSON)
 
-Build pipelines and graphs from a spec file (`pip install pipecraft[spec]`):
+Build pipelines and graphs from a spec file (`pip install stepcraft[spec]`):
 
 ```python
-from pipecraft import Pipeline, Graph
+from stepcraft import Pipeline, Graph
 
 pipe = Pipeline.from_spec("pipeline.yaml")   # { steps: [...] }
 graph = Graph.from_spec("graph.yaml")        # { graph: { nodes:, edges: } }
@@ -320,7 +320,7 @@ Attach a context dict to a pipeline; steps (and `Node.setup`) read it via `get_c
 Context is set on run entry and reset on exit.
 
 ```python
-from pipecraft import Pipeline, piped, get_context
+from stepcraft import Pipeline, piped, get_context
 
 @piped
 def step(x):
@@ -343,7 +343,7 @@ On a free-threaded 3.14t interpreter, `parallel='process'` is automatically
 downgraded to `'thread'`, since threads already provide true parallelism.
 
 ```python
-from pipecraft import (
+from stepcraft import (
     HAS_FREE_THREADING, is_gil_enabled, threads_provide_true_parallelism,
     configure_pools, cleanup_pools,
 )
@@ -375,7 +375,7 @@ Disable runtime checks when needed:
 PIPECRAFT_NO_BEARTYPE=1 python my_app.py
 ```
 
-Internal pipecraft machinery is **not** beartype-decorated — only your step
+Internal stepcraft machinery is **not** beartype-decorated — only your step
 functions are, keeping overhead on your pipeline logic rather than the framework.
 
 ## API Reference

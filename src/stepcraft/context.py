@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Iterator, Optional
 
 # Shared, read-only-ish context for steps to access during a pipeline run.
 _PIPELINE_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
-    contextvars.ContextVar("pipecraft_context", default=None)
+    contextvars.ContextVar("stepcraft_context", default=None)
 )
 
 
