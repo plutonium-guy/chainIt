@@ -41,9 +41,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/amiyamandal-dev/chainIt"
-Repository = "https://github.com/amiyamandal-dev/chainIt"
-Issues = "https://github.com/amiyamandal-dev/chainIt/issues"
+Homepage = "https://github.com/amiyamandal-dev/stepcraft"
+Repository = "https://github.com/amiyamandal-dev/stepcraft"
+Issues = "https://github.com/amiyamandal-dev/stepcraft/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stepcraft"]

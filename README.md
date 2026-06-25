@@ -372,7 +372,7 @@ return annotation (both are checked). The implicit numeric tower is enabled, so
 Disable runtime checks when needed:
 
 ```bash
-PIPECRAFT_NO_BEARTYPE=1 python my_app.py
+STEPCRAFT_NO_BEARTYPE=1 python my_app.py
 ```
 
 Internal stepcraft machinery is **not** beartype-decorated — only your step

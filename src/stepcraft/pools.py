@@ -48,11 +48,17 @@ def _get_pool(kind: str) -> Union[ThreadPoolExecutor, ProcessPoolExecutor]:
     return _POOLS[kind]
 
 
-def cleanup_pools() -> None:
+def cleanup_pools(*, wait: bool = True) -> None:
     """Clean up thread/process pools."""
-    for pool in _POOLS.values():
-        pool.shutdown(wait=True)
+    for pool in list(_POOLS.values()):
+        pool.shutdown(wait=wait, cancel_futures=not wait)
     _POOLS.clear()
 
 
-atexit.register(cleanup_pools)
+def _atexit_cleanup_pools() -> None:
+    # Do not block process exit on workers left running by timeouts / parallel
+    # tests; blocking here caused pytest to hang on CI after all tests passed.
+    cleanup_pools(wait=False)
+
+
+atexit.register(_atexit_cleanup_pools)

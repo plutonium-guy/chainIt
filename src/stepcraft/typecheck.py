@@ -22,7 +22,7 @@ def beartype_enabled() -> bool:
     """Return True when runtime type-checking is active for step functions."""
     if not _HAS_BEARTYPE:
         return False
-    return os.environ.get("PIPECRAFT_NO_BEARTYPE", "").lower() not in (
+    return os.environ.get("STEPCRAFT_NO_BEARTYPE", "").lower() not in (
         "1", "true", "yes",
     )
 

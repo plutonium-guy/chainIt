@@ -1146,7 +1146,7 @@ def test_piped_return_annotation_enforces_output():
 
 
 def test_piped_beartype_disabled_by_env(monkeypatch):
-    monkeypatch.setenv("PIPECRAFT_NO_BEARTYPE", "1")
+    monkeypatch.setenv("STEPCRAFT_NO_BEARTYPE", "1")
 
     @piped
     def loose(x: int):
