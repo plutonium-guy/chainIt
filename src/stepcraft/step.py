@@ -187,12 +187,24 @@ class PipeStep(Generic[T, R]):
             raise RuntimeError(
                 f"Cannot await coroutine {self._func_name} in synchronous context"
             )
-        if self.schema and not isinstance(result, self.schema):
-            raise TypeError(
-                f"Output of {self._func_name} does not match schema {self.schema}"
-            )
         self._reset_circuit_breaker()
         return result
+
+    def _validate_schema(self, result: Any, *, mapped: bool) -> None:
+        """Validate the step output against an explicit ``schema=``.
+
+        When the step mapped over a collection (auto-map / parallel), the
+        schema describes each element, so validate them individually rather
+        than the aggregated list.
+        """
+        if not self.schema:
+            return
+        values = result if mapped and isinstance(result, list) else (result,)
+        for value in values:
+            if not isinstance(value, self.schema):
+                raise TypeError(
+                    f"Output of {self._func_name} does not match schema {self.schema}"
+                )
 
     def _should_retry(self, attempt: int, error: Exception) -> bool:
         return (
@@ -274,27 +286,34 @@ class PipeStep(Generic[T, R]):
     def _invoke_function(self, input_value: Any) -> Any:
         args, kwargs = self._prepare_args(input_value)
         # parallel wins over batch; batch wins over per-element auto-map.
+        # `mapped` marks element-wise execution so schema is checked per item.
         if self.parallel and self._should_parallelize(args):
-            return self._execute_parallel(args, kwargs)
-        if self.batch_size > 1 and self._should_batch(args):
-            return self._execute_batched(args, kwargs)
-        if self._should_auto_map(args):
-            return self._execute_auto_map(args, kwargs)
-        return self.func(*args, **kwargs)
+            result, mapped = self._execute_parallel(args, kwargs), True
+        elif self.batch_size > 1 and self._should_batch(args):
+            result, mapped = self._execute_batched(args, kwargs), False
+        elif self._should_auto_map(args):
+            result, mapped = self._execute_auto_map(args, kwargs), True
+        else:
+            result, mapped = self.func(*args, **kwargs), False
+        self._validate_schema(result, mapped=mapped)
+        return result
 
     async def _invoke_function_async(self, input_value: Any) -> Any:
         args, kwargs = self._prepare_args(input_value)
         if self.parallel and self._should_parallelize(args):
-            return await self._execute_parallel_async(args, kwargs)
-        if self.batch_size > 1 and self._should_batch(args):
-            return await self._execute_batched_async(args, kwargs)
-        if self._should_auto_map(args):
-            return await self._execute_auto_map_async(args, kwargs)
-        if self._is_async:
-            return await self.func(*args, **kwargs)
-        loop = asyncio.get_running_loop()
-        call = self._wrap_worker(functools.partial(self.func, *args, **kwargs))
-        return await loop.run_in_executor(None, call)
+            result, mapped = await self._execute_parallel_async(args, kwargs), True
+        elif self.batch_size > 1 and self._should_batch(args):
+            result, mapped = await self._execute_batched_async(args, kwargs), False
+        elif self._should_auto_map(args):
+            result, mapped = await self._execute_auto_map_async(args, kwargs), True
+        elif self._is_async:
+            result, mapped = await self.func(*args, **kwargs), False
+        else:
+            loop = asyncio.get_running_loop()
+            call = self._wrap_worker(functools.partial(self.func, *args, **kwargs))
+            result, mapped = await loop.run_in_executor(None, call), False
+        self._validate_schema(result, mapped=mapped)
+        return result
 
     def _should_parallelize(self, args: Tuple[Any, ...]) -> bool:
         return len(args) == 1 and _is_iterable_collection(args[0]) and len(args[0]) > 1

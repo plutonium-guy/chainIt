@@ -56,8 +56,15 @@ def _run_with_captured_context(
 
 
 def wrap_worker(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Wrap *fn* so pool workers inherit the caller's pipeline context."""
+    """Wrap *fn* so pool workers inherit the caller's pipeline context.
+
+    Fast path: when no pipeline context is active (the common case), return
+    *fn* unchanged so per-element / per-worker dispatch carries no wrapper
+    overhead.
+    """
     ctx = _PIPELINE_CONTEXT.get()
+    if ctx is None:
+        return fn
     return functools.partial(_run_with_captured_context, ctx, fn)
 
 

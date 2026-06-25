@@ -1157,6 +1157,46 @@ def test_piped_beartype_disabled_by_env(monkeypatch):
     assert loose.run("not-checked") == "not-checked"
 
 
+def test_return_annotation_does_not_break_auto_map():
+    """An annotated @piped step auto-mapped over a list returns a list and is
+    not wrongly checked against the per-element return annotation."""
+    @piped
+    def to_pair(x: int) -> dict:
+        return {"v": x}
+
+    assert to_pair.run([1, 2, 3]) == [{"v": 1}, {"v": 2}, {"v": 3}]
+    # beartype still enforces the per-element return type.
+    @piped
+    def bad(x: int) -> dict:
+        return x  # type: ignore[return-value]
+
+    with pytest.raises(PipelineError):
+        bad.run([1, 2])
+
+
+def test_explicit_schema_validates_per_element_under_auto_map():
+    @piped(schema=int)
+    def inc(x):
+        return x + 1
+
+    assert inc.run([1, 2, 3]) == [2, 3, 4]  # each element is an int
+
+    @piped(schema=int)
+    def to_str(x):
+        return str(x)
+
+    with pytest.raises(PipelineError):
+        to_str.run([1, 2, 3])  # each element is a str -> fails per element
+
+
+def test_explicit_schema_validates_per_element_under_parallel():
+    @piped(parallel="thread", schema=int)
+    def inc(x):
+        return x + 1
+
+    assert inc.run([1, 2, 3]) == [2, 3, 4]
+
+
 def test_piped_parallel_batch_warns(caplog):
     import logging
 

@@ -38,10 +38,13 @@ def resolve_output_schema(
     func: Callable[..., Any],
     schema: Optional[type],
 ) -> Optional[type]:
-    """Use explicit ``schema=`` or fall back to the function return annotation."""
-    if schema is not None:
-        return schema
-    ret = getattr(func, "__annotations__", {}).get("return")
-    if ret is not None and ret is not type(None):
-        return ret
-    return None
+    """Return the explicit ``schema=`` output check, if any.
+
+    The function's return-type annotation is intentionally NOT used as a schema:
+    beartype already validates the return value on every call — including each
+    element of an auto-mapped / parallel run — at the correct granularity.
+    Deriving a schema from the annotation duplicated that work and, because an
+    auto-mapped step returns a *list*, wrongly failed the whole-list check.
+    ``schema=`` remains for explicit, beartype-independent output validation.
+    """
+    return schema
