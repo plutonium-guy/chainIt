@@ -5,6 +5,7 @@ import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Set
 
+from .context import activate_context, wrap_worker
 from .exceptions import GraphCycleError
 from .hooks import StepHook, _call_hook
 from .pools import _get_pool
@@ -13,12 +14,15 @@ from .pools import _get_pool
 class Graph:
     """DAG-based pipeline for complex dependency graphs."""
 
-    def __init__(self):
+    __slots__ = ('_nodes', '_edges', '_reverse', '_topo_order', '_topo_levels_cache', '_context')
+
+    def __init__(self, *, context: Optional[Dict[str, Any]] = None):
         self._nodes: Dict[str, Any] = {}
         self._edges: Dict[str, Set[str]] = {}
         self._reverse: Dict[str, Set[str]] = {}
         self._topo_order: Optional[List[str]] = None
         self._topo_levels_cache: Optional[List[List[str]]] = None
+        self._context = context
 
     def _invalidate_topo_cache(self) -> None:
         self._topo_order = None
@@ -103,7 +107,8 @@ class Graph:
             return await step.async_run(input_value)
         if hasattr(step, 'run'):
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, step.run, input_value)
+            call = wrap_worker(lambda: step.run(input_value))
+            return await loop.run_in_executor(None, call)
         result = step(input_value)
         if asyncio.iscoroutine(result):
             return await result
@@ -127,36 +132,38 @@ class Graph:
         """Execute graph synchronously."""
         results: Dict[str, Any] = {}
 
-        if parallel:
-            pool = _get_pool('thread')
-            for level in self._topo_levels():
-                if len(level) == 1:
-                    name = level[0]
+        with activate_context(self._context):
+            if parallel:
+                pool = _get_pool('thread')
+                run_node = wrap_worker(self._run_node)
+                for level in self._topo_levels():
+                    if len(level) == 1:
+                        name = level[0]
+                        inp = self._get_node_input(name, results, seed)
+                        t0 = time.perf_counter()
+                        results[name] = self._run_node(name, inp)
+                        _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
+                    else:
+                        futures = {}
+                        inputs = {}
+                        starts = {}
+                        for name in level:
+                            inp = self._get_node_input(name, results, seed)
+                            inputs[name] = inp
+                            starts[name] = time.perf_counter()
+                            futures[name] = pool.submit(run_node, name, inp)
+                        for name, fut in futures.items():
+                            results[name] = fut.result()
+                            _call_hook(
+                                on_step, name, inputs[name], results[name],
+                                time.perf_counter() - starts[name],
+                            )
+            else:
+                for name in self._topo_sort():
                     inp = self._get_node_input(name, results, seed)
                     t0 = time.perf_counter()
                     results[name] = self._run_node(name, inp)
                     _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
-                else:
-                    futures = {}
-                    inputs = {}
-                    starts = {}
-                    for name in level:
-                        inp = self._get_node_input(name, results, seed)
-                        inputs[name] = inp
-                        starts[name] = time.perf_counter()
-                        futures[name] = pool.submit(self._run_node, name, inp)
-                    for name, fut in futures.items():
-                        results[name] = fut.result()
-                        _call_hook(
-                            on_step, name, inputs[name], results[name],
-                            time.perf_counter() - starts[name],
-                        )
-        else:
-            for name in self._topo_sort():
-                inp = self._get_node_input(name, results, seed)
-                t0 = time.perf_counter()
-                results[name] = self._run_node(name, inp)
-                _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
 
         return results
 
@@ -170,37 +177,38 @@ class Graph:
         """Execute graph asynchronously."""
         results: Dict[str, Any] = {}
 
-        if parallel:
-            for level in self._topo_levels():
-                if len(level) == 1:
-                    name = level[0]
+        with activate_context(self._context):
+            if parallel:
+                for level in self._topo_levels():
+                    if len(level) == 1:
+                        name = level[0]
+                        inp = self._get_node_input(name, results, seed)
+                        t0 = time.perf_counter()
+                        results[name] = await self._async_run_node(name, inp)
+                        _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
+                    else:
+                        tasks = {}
+                        inputs = {}
+                        starts = {}
+                        for name in level:
+                            inp = self._get_node_input(name, results, seed)
+                            inputs[name] = inp
+                            starts[name] = time.perf_counter()
+                            tasks[name] = asyncio.create_task(
+                                self._async_run_node(name, inp)
+                            )
+                        for name, task in tasks.items():
+                            results[name] = await task
+                            _call_hook(
+                                on_step, name, inputs[name], results[name],
+                                time.perf_counter() - starts[name],
+                            )
+            else:
+                for name in self._topo_sort():
                     inp = self._get_node_input(name, results, seed)
                     t0 = time.perf_counter()
                     results[name] = await self._async_run_node(name, inp)
                     _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
-                else:
-                    tasks = {}
-                    inputs = {}
-                    starts = {}
-                    for name in level:
-                        inp = self._get_node_input(name, results, seed)
-                        inputs[name] = inp
-                        starts[name] = time.perf_counter()
-                        tasks[name] = asyncio.create_task(
-                            self._async_run_node(name, inp)
-                        )
-                    for name, task in tasks.items():
-                        results[name] = await task
-                        _call_hook(
-                            on_step, name, inputs[name], results[name],
-                            time.perf_counter() - starts[name],
-                        )
-        else:
-            for name in self._topo_sort():
-                inp = self._get_node_input(name, results, seed)
-                t0 = time.perf_counter()
-                results[name] = await self._async_run_node(name, inp)
-                _call_hook(on_step, name, inp, results[name], time.perf_counter() - t0)
 
         return results
 

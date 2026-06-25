@@ -1097,6 +1097,66 @@ def test_node_decorator_mixed_with_piped():
     assert result == 12
 
 
+def test_node_decorator_preserves_display_name():
+    """@node must not mutate __class__.__name__ for display."""
+    @node
+    def my_step(x):
+        return x + 1
+
+    assert my_step._func_name == "my_step"
+    assert repr(my_step) == "my_step()"
+    assert my_step.__class__.__name__ == "FuncNode"
+
+
+def test_piped_beartype_validates_input():
+    @piped
+    def only_int(x: int) -> int:
+        return x + 1
+
+    assert only_int.run(1) == 2
+    with pytest.raises(PipelineError):
+        only_int.run("bad")
+
+
+def test_piped_beartype_validates_return():
+    @piped
+    def must_return_int(x: int) -> int:
+        return str(x)  # type: ignore[return-value]
+
+    with pytest.raises(PipelineError):
+        must_return_int.run(1)
+
+
+def test_piped_return_annotation_enforces_output():
+    @piped
+    def via_annotation(x) -> int:
+        return "not-int"
+
+    with pytest.raises(PipelineError):
+        via_annotation.run(1)
+
+
+def test_piped_beartype_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("PIPECRAFT_NO_BEARTYPE", "1")
+
+    @piped
+    def loose(x: int):
+        return x
+
+    assert loose.run("not-checked") == "not-checked"
+
+
+def test_piped_parallel_batch_warns(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="pipecraft"):
+        @piped(parallel="thread", batch_size=4)
+        def work(x):
+            return x
+
+    assert any("batch_size" in r.message for r in caplog.records)
+
+
 # =============================================================================
 # SwitchStep Tests
 # =============================================================================
@@ -1760,6 +1820,33 @@ def test_on_step_hook_async():
     assert events[0][0] == "add_one"
 
 
+def test_map_on_step_hook():
+    """CR-5: map() must forward on_step to each per-item run."""
+    calls = []
+
+    @piped
+    def add_one(x):
+        return x + 1
+
+    pipeline = Pipeline([add_one])
+    result = pipeline.map([1, 2, 3], on_step=lambda *a: calls.append(a))
+    assert result == [2, 3, 4]
+    assert len(calls) == 3
+
+
+def test_run_async_on_step_hook():
+    calls = []
+
+    @piped
+    def add_one(x):
+        return x + 1
+
+    pipeline = Pipeline([add_one])
+    result = pipeline.run_async(5, on_step=lambda *a: calls.append(a))
+    assert result == 6
+    assert len(calls) == 1
+
+
 def test_on_step_hook_error_does_not_break_pipeline(caplog):
     @piped
     def add_one(x):
@@ -1843,6 +1930,61 @@ def test_circuit_breaker_half_open_probe_success_closes():
     # Successful probe closes the breaker.
     assert sometimes.run(5) == 10
     assert sometimes.run(7) == 14
+
+
+def test_circuit_breaker_half_open_cancel_preserves_probe():
+    """CR-2: cancel before probe must not consume the half-open slot."""
+    counter = Counter()
+
+    @circuit_breaker(failure_threshold=1, recovery_timeout=0.1)
+    @piped
+    def sometimes(x):
+        counter.increment()
+        if x < 0:
+            raise MockException("fail")
+        return x * 2
+
+    with pytest.raises(PipelineError):
+        sometimes.run(-1)
+    assert counter.count == 1
+
+    time.sleep(0.15)
+
+    cancelled = Pipeline([sometimes])
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        cancelled.run(5)
+    assert counter.count == 1
+
+    assert Pipeline([sometimes]).run(5) == 10
+    assert counter.count == 2
+
+
+def test_circuit_breaker_schema_failure_reopens_half_open():
+    """CR-3: schema failure on a half-open probe must re-open the breaker."""
+    counter = Counter()
+
+    @circuit_breaker(failure_threshold=1, recovery_timeout=0.1)
+    @piped(schema=int)
+    def probe(x):
+        counter.increment()
+        if x < 0:
+            raise MockException("fail")
+        return "wrong-type"
+
+    with pytest.raises(PipelineError):
+        probe.run(-1)
+    assert counter.count == 1
+
+    time.sleep(0.15)
+
+    with pytest.raises(PipelineError):
+        probe.run(5)
+    assert counter.count == 2
+
+    with pytest.raises(PipelineError):
+        probe.run(99)
+    assert counter.count == 2
 
 
 # =============================================================================
@@ -1951,6 +2093,86 @@ def test_context_async():
     assert seen["trace"] == "xyz"
 
 
+def test_context_parallel_thread():
+    from pipeline import get_context
+
+    seen = []
+
+    @piped(parallel='thread')
+    def step(x):
+        seen.append(dict(get_context()))
+        return x * 2
+
+    p = Pipeline([step], context={"request_id": "par"})
+    assert p.run([1, 2, 3]) == [2, 4, 6]
+    assert all(item["request_id"] == "par" for item in seen)
+
+
+def test_context_timeout_thread_pool():
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped(timeout=1.0)
+    def step(x):
+        seen.update(get_context())
+        return x + 1
+
+    p = Pipeline([step], context={"tid": "timeout"})
+    assert p.run(1) == 2
+    assert seen["tid"] == "timeout"
+
+
+def test_context_async_sync_step_in_executor():
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped
+    def step(x):
+        seen.update(get_context())
+        return x + 1
+
+    p = Pipeline([step], context={"async_exec": "yes"})
+    asyncio.run(p.async_run(4))
+    assert seen["async_exec"] == "yes"
+
+
+def test_graph_shared_context():
+    """CR-4: Graph.run must activate shared context like Pipeline."""
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped
+    def inc(x):
+        seen.update(get_context())
+        return x + 1
+
+    g = Graph(context={"graph_id": "dag"})
+    g.add_node("a", inc)
+    results = g.run(seed=5)
+    assert results["a"] == 6
+    assert seen["graph_id"] == "dag"
+
+
+def test_graph_shared_context_async():
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped
+    async def inc(x):
+        seen.update(get_context())
+        return x + 1
+
+    g = Graph(context={"mode": "async"})
+    g.add_node("a", inc)
+    results = asyncio.run(g.async_run(seed=3, parallel=False))
+    assert results["a"] == 4
+    assert seen["mode"] == "async"
+
+
 # =============================================================================
 # Graph from_spec
 # =============================================================================
@@ -1983,6 +2205,27 @@ def test_pipeline_from_spec_rejects_graph(tmp_path):
     )
     with pytest.raises(ValueError):
         Pipeline.from_spec(str(spec))
+
+
+def test_pipeline_from_spec_rejects_both_graph_and_steps(tmp_path):
+    """CR-6: ambiguous specs with both keys must raise."""
+    spec = tmp_path / "ambiguous.json"
+    spec.write_text(
+        '{"steps": [{"import": "tests.spec_fixtures:inc"}], '
+        '"graph": {"nodes": {"a": {"import": "tests.spec_fixtures:inc"}}}}'
+    )
+    with pytest.raises(ValueError, match="both 'graph' and 'steps'"):
+        Pipeline.from_spec(str(spec))
+
+
+def test_graph_from_spec_rejects_both_graph_and_steps(tmp_path):
+    spec = tmp_path / "ambiguous.json"
+    spec.write_text(
+        '{"steps": [{"import": "tests.spec_fixtures:inc"}], '
+        '"graph": {"nodes": {"a": {"import": "tests.spec_fixtures:inc"}}}}'
+    )
+    with pytest.raises(ValueError, match="both 'graph' and 'steps'"):
+        Graph.from_spec(str(spec))
 
 
 def test_shim_exports_new_apis():

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import contextmanager
-from typing import Any, Dict, Generic, Iterable, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence
 
 from .constants import R, T
-from .context import _reset_context, _set_context
+from .context import activate_context
 from .hooks import StepHook, _call_hook
 from .pools import cleanup_pools
 from .result import ExecutionResult
@@ -54,18 +53,6 @@ class Pipeline(Generic[T, R]):
             )
         return Pipeline([*self.steps, other], context=self._context)
 
-    @contextmanager
-    def _activate_context(self) -> Iterator[None]:
-        """Make ``self._context`` visible to steps via ``get_context()``."""
-        if self._context is None:
-            yield
-            return
-        token = _set_context(self._context)
-        try:
-            yield
-        finally:
-            _reset_context(token)
-
     def __call__(self, seed: Any = None) -> R:
         return self.run(seed)
 
@@ -110,7 +97,7 @@ class Pipeline(Generic[T, R]):
 
     def run(self, seed: Any = None, *, on_step: Optional[StepHook] = None) -> R:
         value = seed
-        with self._activate_context():
+        with activate_context(self._context):
             for step in self.steps:
                 self._prepare_step(step)
                 step_input = value
@@ -125,7 +112,7 @@ class Pipeline(Generic[T, R]):
         self, seed: Any = None, *, on_step: Optional[StepHook] = None
     ) -> R:
         value = seed
-        with self._activate_context():
+        with activate_context(self._context):
             for step in self.steps:
                 self._prepare_step(step)
                 step_input = value
@@ -145,7 +132,7 @@ class Pipeline(Generic[T, R]):
         history = []
         value = seed
         start_time = time.perf_counter()
-        with self._activate_context():
+        with activate_context(self._context):
             for step in self.steps:
                 self._prepare_step(step)
                 step_input = value
@@ -169,7 +156,7 @@ class Pipeline(Generic[T, R]):
         history = []
         value = seed
         start_time = time.perf_counter()
-        with self._activate_context():
+        with activate_context(self._context):
             for step in self.steps:
                 self._prepare_step(step)
                 step_input = value
@@ -190,24 +177,32 @@ class Pipeline(Generic[T, R]):
             n=len(self.steps),
         )
 
-    def map(self, items: Iterable[Any]) -> List[Any]:
+    def map(
+        self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
+    ) -> List[Any]:
         """Apply pipeline to each item in a collection."""
-        return [self.run(item) for item in items]
+        return [self.run(item, on_step=on_step) for item in items]
 
-    async def async_map(self, items: Iterable[Any]) -> List[Any]:
+    async def async_map(
+        self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
+    ) -> List[Any]:
         """Apply pipeline to each item asynchronously."""
-        tasks = [self.async_run(item) for item in items]
+        tasks = [self.async_run(item, on_step=on_step) for item in items]
         return list(await asyncio.gather(*tasks))
 
-    def run_async(self, seed: Any = None) -> R:
+    def run_async(
+        self, seed: Any = None, *, on_step: Optional[StepHook] = None,
+    ) -> R:
         """Run the pipeline asynchronously using rsloop when available."""
         from .async_runtime import run_async as _run_async
-        return _run_async(self.async_run(seed))
+        return _run_async(self.async_run(seed, on_step=on_step))
 
-    def map_async(self, items: Iterable[Any]) -> List[Any]:
+    def map_async(
+        self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
+    ) -> List[Any]:
         """Apply pipeline to each item via the async runtime (rsloop when available)."""
         from .async_runtime import run_async as _run_async
-        return _run_async(self.async_map(items))
+        return _run_async(self.async_map(items, on_step=on_step))
 
     @classmethod
     def from_spec(

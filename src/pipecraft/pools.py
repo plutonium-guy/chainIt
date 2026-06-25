@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
@@ -51,3 +52,6 @@ def cleanup_pools() -> None:
     for pool in _POOLS.values():
         pool.shutdown(wait=True)
     _POOLS.clear()
+
+
+atexit.register(cleanup_pools)

@@ -141,6 +141,11 @@ def build_pipeline_from_spec(
     spec: dict,
     registry: Optional[Mapping[str, Any]] = None,
 ):
+    if "graph" in spec and "steps" in spec:
+        raise ValueError(
+            "Spec contains both 'graph' and 'steps'; use Graph.from_spec() "
+            "or Pipeline.from_spec(), not both"
+        )
     if "graph" in spec and "steps" not in spec:
         raise ValueError(
             "Spec defines a 'graph:' block; load it with Graph.from_spec(), "
@@ -163,6 +168,11 @@ def build_graph_from_spec(
     spec: dict,
     registry: Optional[Mapping[str, Any]] = None,
 ):
+    if "graph" in spec and "steps" in spec:
+        raise ValueError(
+            "Spec contains both 'graph' and 'steps'; use Graph.from_spec() "
+            "or Pipeline.from_spec(), not both"
+        )
     graph_spec = spec.get("graph")
     if not isinstance(graph_spec, dict):
         raise ValueError("Graph spec must include a 'graph' mapping")
@@ -173,7 +183,11 @@ def build_graph_from_spec(
 
     from .graph import Graph
 
-    graph = Graph()
+    context = spec.get("context")
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("Graph spec 'context' must be a mapping")
+
+    graph = Graph(context=context)
     for name, entry in nodes.items():
         graph.add_node(name, _build_step(entry, registry))
 

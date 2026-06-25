@@ -6,6 +6,7 @@ from .config import CircuitBreakerConfig, RetryConfig
 from .constants import HAS_NUMPY, logger, np
 from .node import Node
 from .step import PipeStep
+from .typecheck import apply_step_beartype, resolve_output_schema
 from .utils import _get_func_name
 
 
@@ -30,7 +31,16 @@ def piped(
         auto_map = map
 
     def decorator(f: Callable) -> PipeStep:
-        optimized = f
+        if parallel and batch_size > 1:
+            logger.warning(
+                "%s: parallel=%r takes precedence over batch_size=%d; "
+                "batching is ignored when both are set",
+                _get_func_name(f), parallel, batch_size,
+            )
+
+        checked = apply_step_beartype(f)
+        optimized = checked
+        output_schema = resolve_output_schema(f, schema)
 
         if jit:
             try:
@@ -71,7 +81,7 @@ def piped(
             auto_map=auto_map,
             timeout=timeout,
             cancel_on_timeout=cancel_on_timeout,
-            schema=schema,
+            schema=output_schema,
         )
 
     return decorator(func) if func else decorator
@@ -126,18 +136,25 @@ def node(
     """Decorator to create a Node from a function."""
 
     def decorator(f: Callable) -> Node:
+        display_name = _get_func_name(f)
+        checked = apply_step_beartype(f)
+
         class FuncNode(Node):
+            @property
+            def _func_name(self) -> str:
+                return display_name
+
+            def __repr__(self) -> str:
+                return f"{display_name}()"
+
             def process(self, *args, **kwargs):
-                return f(*args, **kwargs)
+                return checked(*args, **kwargs)
 
         if setup:
             FuncNode.setup = setup
         if teardown:
             FuncNode.teardown = teardown
 
-        inst = FuncNode()
-        inst.__class__.__name__ = _get_func_name(f)
-        inst.__class__.__qualname__ = _get_func_name(f)
-        return inst
+        return FuncNode()
 
     return decorator(func) if func else decorator

@@ -354,11 +354,29 @@ configure_pools(thread_workers=8, process_workers=4)
 
 ### Runtime type-checking (beartype)
 
-Every public function and method is decorated by
-[beartype](https://beartype.readthedocs.io/) via its import hook, giving
-near-zero-overhead runtime type-checking of arguments and return values. It is a
-declared dependency and always on; the implicit numeric tower is enabled so
+`@piped` and `@node` step functions are wrapped with
+[beartype](https://beartype.readthedocs.io/) so **arguments and return values**
+are checked against your type hints at runtime. Annotate inputs and the return
+type on the function itself:
+
+```python
+@piped
+def add_tax(amount: float, rate: float = 0.1) -> float:
+    return amount * (1 + rate)
+```
+
+You can also enforce output with `@piped(schema=int)` or rely on a `-> int`
+return annotation (both are checked). The implicit numeric tower is enabled, so
 `int` is accepted where `float` is annotated.
+
+Disable runtime checks when needed:
+
+```bash
+PIPECRAFT_NO_BEARTYPE=1 python my_app.py
+```
+
+Internal pipecraft machinery is **not** beartype-decorated — only your step
+functions are, keeping overhead on your pipeline logic rather than the framework.
 
 ## API Reference
 

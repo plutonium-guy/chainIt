@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Generic, Optional, Tuple
 
 from .config import CircuitBreakerConfig, CircuitState, RetryConfig
+from .context import wrap_worker
 from .constants import HAS_NUMPY, PIPE, R, T, logger, np
 from .exceptions import CircuitBreakerError, PipelineError, RetryExhaustedError
 from .pools import _get_pool
@@ -72,6 +74,16 @@ class PipeStep(Generic[T, R]):
                 f"Function {self._func_name} not pickleable, falling back to threads"
             )
             object.__setattr__(self, 'parallel', 'thread')
+        object.__setattr__(self, '_breaker_lock', threading.Lock())
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop('_breaker_lock', None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        object.__setattr__(self, '_breaker_lock', threading.Lock())
 
     def __repr__(self) -> str:
         parts = [self._func_name]
@@ -157,12 +169,12 @@ class PipeStep(Generic[T, R]):
         return await self._execute_async(input_value)
 
     def _preflight_check(self) -> None:
-        if self._check_circuit_breaker():
-            raise CircuitBreakerError(self._func_name, Exception("Circuit breaker is open"))
-
         cancel_event = getattr(self, '_cancel_event', None)
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()
+
+        if self._check_circuit_breaker():
+            raise CircuitBreakerError(self._func_name, Exception("Circuit breaker is open"))
 
     def _record_and_raise(self, last_exception: BaseException) -> None:
         self._record_failure()
@@ -175,11 +187,11 @@ class PipeStep(Generic[T, R]):
             raise RuntimeError(
                 f"Cannot await coroutine {self._func_name} in synchronous context"
             )
-        self._reset_circuit_breaker()
         if self.schema and not isinstance(result, self.schema):
             raise TypeError(
                 f"Output of {self._func_name} does not match schema {self.schema}"
             )
+        self._reset_circuit_breaker()
         return result
 
     def _should_retry(self, attempt: int, error: Exception) -> bool:
@@ -199,7 +211,9 @@ class PipeStep(Generic[T, R]):
             try:
                 if self.timeout is not None:
                     pool = _get_pool('thread')
-                    fut = pool.submit(self._invoke_function, input_value)
+                    fut = pool.submit(
+                        self._wrap_worker(self._invoke_function), input_value,
+                    )
                     try:
                         result = fut.result(timeout=self.timeout)
                     except Exception:
@@ -207,6 +221,12 @@ class PipeStep(Generic[T, R]):
                         # not started; a running thread cannot be interrupted.
                         if self.cancel_on_timeout:
                             fut.cancel()
+                        if not fut.done():
+                            logger.warning(
+                                "%s timed out after %ss; the worker thread may "
+                                "still be running",
+                                self._func_name, self.timeout,
+                            )
                         raise
                 else:
                     result = self._invoke_function(input_value)
@@ -273,13 +293,17 @@ class PipeStep(Generic[T, R]):
         if self._is_async:
             return await self.func(*args, **kwargs)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, functools.partial(self.func, *args, **kwargs))
+        call = self._wrap_worker(functools.partial(self.func, *args, **kwargs))
+        return await loop.run_in_executor(None, call)
 
     def _should_parallelize(self, args: Tuple[Any, ...]) -> bool:
         return len(args) == 1 and _is_iterable_collection(args[0]) and len(args[0]) > 1
 
     def _should_batch(self, args: Tuple[Any, ...]) -> bool:
         return len(args) == 1 and _is_iterable_collection(args[0]) and len(args[0]) > self.batch_size
+
+    def _wrap_worker(self, fn: Callable[..., Any], pool_kind: Optional[str] = None) -> Callable[..., Any]:
+        return wrap_worker(fn)
 
     def _should_auto_map(self, args: Tuple[Any, ...]) -> bool:
         return (
@@ -308,6 +332,7 @@ class PipeStep(Generic[T, R]):
             call = functools.partial(self.func, **kwargs) if kwargs else self.func
             return list(await asyncio.gather(*(call(item) for item in items)))
         call = functools.partial(self.func, **kwargs) if kwargs else self.func
+        call = self._wrap_worker(call)
         loop = asyncio.get_running_loop()
         tasks = [loop.run_in_executor(None, call, item) for item in items]
         return list(await asyncio.gather(*tasks))
@@ -316,6 +341,7 @@ class PipeStep(Generic[T, R]):
         items = args[0]
         pool = _get_pool(self.parallel)
         call = functools.partial(self.func, **kwargs) if kwargs else self.func
+        call = self._wrap_worker(call, self.parallel)
         results = list(pool.map(call, items))
         return results[0] if len(results) == 1 else results
 
@@ -328,6 +354,7 @@ class PipeStep(Generic[T, R]):
             pool = _get_pool(self.parallel)
             loop = asyncio.get_running_loop()
             call = functools.partial(self.func, **kwargs) if kwargs else self.func
+            call = self._wrap_worker(call, self.parallel)
             tasks = [loop.run_in_executor(pool, call, item) for item in items]
             results = list(await asyncio.gather(*tasks))
         return results[0] if len(results) == 1 else results
@@ -352,9 +379,8 @@ class PipeStep(Generic[T, R]):
                 result = await self.func(batch, **kwargs)
             else:
                 loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None, functools.partial(self.func, batch, **kwargs),
-                )
+                call = self._wrap_worker(functools.partial(self.func, batch, **kwargs))
+                result = await loop.run_in_executor(None, call)
             results.append(result)
         return self._aggregate_batch_results(results)
 
@@ -375,41 +401,44 @@ class PipeStep(Generic[T, R]):
         if not self.circuit_config:
             return False
 
-        if self._circuit_state == CircuitState.OPEN:
-            if time.time() - self._last_failure_time >= self.circuit_config.timeout:
-                # Recovery window elapsed: move to HALF_OPEN for limited probing.
-                object.__setattr__(self, '_circuit_state', CircuitState.HALF_OPEN)
-                object.__setattr__(self, '_failure_count', 0)
-                object.__setattr__(self, '_half_open_calls', 0)
-            else:
-                return True
+        with self._breaker_lock:
+            if self._circuit_state == CircuitState.OPEN:
+                if time.time() - self._last_failure_time >= self.circuit_config.timeout:
+                    # Recovery window elapsed: move to HALF_OPEN for limited probing.
+                    object.__setattr__(self, '_circuit_state', CircuitState.HALF_OPEN)
+                    object.__setattr__(self, '_failure_count', 0)
+                    object.__setattr__(self, '_half_open_calls', 0)
+                else:
+                    return True
 
-        if self._circuit_state == CircuitState.HALF_OPEN:
-            if self._half_open_calls >= self.circuit_config.half_open_max_calls:
-                return True  # probe quota exhausted; keep blocking until verdict
-            object.__setattr__(self, '_half_open_calls', self._half_open_calls + 1)
+            if self._circuit_state == CircuitState.HALF_OPEN:
+                if self._half_open_calls >= self.circuit_config.half_open_max_calls:
+                    return True  # probe quota exhausted; keep blocking until verdict
+                object.__setattr__(self, '_half_open_calls', self._half_open_calls + 1)
+                return False
+
             return False
-
-        return False
 
     def _record_failure(self):
         if not self.circuit_config:
             return
-        object.__setattr__(self, '_failure_count', self._failure_count + 1)
-        object.__setattr__(self, '_last_failure_time', time.time())
-        # A failed half-open probe re-opens immediately; otherwise trip on threshold.
-        if (
-            self._circuit_state == CircuitState.HALF_OPEN
-            or self._failure_count >= self.circuit_config.threshold
-        ):
-            object.__setattr__(self, '_circuit_state', CircuitState.OPEN)
-            object.__setattr__(self, '_half_open_calls', 0)
+        with self._breaker_lock:
+            object.__setattr__(self, '_failure_count', self._failure_count + 1)
+            object.__setattr__(self, '_last_failure_time', time.time())
+            # A failed half-open probe re-opens immediately; otherwise trip on threshold.
+            if (
+                self._circuit_state == CircuitState.HALF_OPEN
+                or self._failure_count >= self.circuit_config.threshold
+            ):
+                object.__setattr__(self, '_circuit_state', CircuitState.OPEN)
+                object.__setattr__(self, '_half_open_calls', 0)
 
     def _reset_circuit_breaker(self):
         if self.circuit_config:
-            object.__setattr__(self, '_circuit_state', CircuitState.CLOSED)
-            object.__setattr__(self, '_failure_count', 0)
-            object.__setattr__(self, '_half_open_calls', 0)
+            with self._breaker_lock:
+                object.__setattr__(self, '_circuit_state', CircuitState.CLOSED)
+                object.__setattr__(self, '_failure_count', 0)
+                object.__setattr__(self, '_half_open_calls', 0)
 
     def __or__(self, other):
         from .pipeline import Pipeline

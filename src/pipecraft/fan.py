@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Iterable, List, Optional, Tuple
 
 from .constants import R, T
+from .context import wrap_worker
 from .pools import _get_pool
 from .runtime import resolve_parallel_kind
 
@@ -31,8 +32,9 @@ class FanOutStep(Generic[T, R]):
     def run(self, value: T) -> Tuple[R, ...]:
         if self.parallel:
             pool = _get_pool(self.parallel)
+            runner = wrap_worker(_run_branch_on)
             return tuple(
-                pool.map(_run_branch_on, self.branches, itertools.repeat(value))
+                pool.map(runner, self.branches, itertools.repeat(value))
             )
         return tuple(branch.run(value) for branch in self.branches)
 
@@ -40,8 +42,9 @@ class FanOutStep(Generic[T, R]):
         if self.parallel:
             pool = _get_pool(self.parallel)
             loop = asyncio.get_running_loop()
+            runner = wrap_worker(_run_branch_on)
             tasks = [
-                loop.run_in_executor(pool, _run_branch_on, branch, value)
+                loop.run_in_executor(pool, runner, branch, value)
                 for branch in self.branches
             ]
             return tuple(await asyncio.gather(*tasks))
@@ -52,7 +55,8 @@ class FanOutStep(Generic[T, R]):
                 tasks.append(branch.async_run(value))
             else:
                 loop = asyncio.get_running_loop()
-                tasks.append(loop.run_in_executor(None, branch.run, value))
+                call = wrap_worker(lambda b=branch, v=value: b.run(v))
+                tasks.append(loop.run_in_executor(None, call))
         return tuple(await asyncio.gather(*tasks))
 
     @property

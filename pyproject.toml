@@ -33,6 +33,13 @@ rsloop = ["rsloop"]
 spec = ["pyyaml"]
 all = ["numpy", "numba", "rsloop", "pyyaml"]
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "numpy",
+    "pyyaml",
+]
+
 [project.urls]
 Homepage = "https://github.com/amiyamandal-dev/chainIt"
 Repository = "https://github.com/amiyamandal-dev/chainIt"
@@ -47,5 +54,5 @@ pythonpath = [
     ".",
 ]
 filterwarnings = [
-    "ignore::beartype.roar.BeartypeDecorHintPep585DeprecationWarning",
+    "ignore:.*:beartype.roar.BeartypeDecorHintPep585DeprecationWarning",
 ]
