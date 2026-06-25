@@ -281,6 +281,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beartype" },
+    { name = "rsloop" },
 ]
 
 [package.optional-dependencies]
@@ -320,6 +321,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'numpy'" },
     { name = "pyyaml", marker = "extra == 'all'" },
     { name = "pyyaml", marker = "extra == 'spec'" },
+    { name = "rsloop", specifier = ">=0.1.19" },
     { name = "rsloop", marker = "extra == 'all'" },
     { name = "rsloop", marker = "extra == 'rsloop'" },
 ]

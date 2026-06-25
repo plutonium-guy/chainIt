@@ -24,7 +24,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 keywords = ["pipeline", "pipe", "dag", "graph", "workflow", "chain", "compose"]
-dependencies = ["beartype>=0.18"]
+dependencies = [
+    "beartype>=0.18",
+    "rsloop>=0.1.19",
+]
 
 [project.optional-dependencies]
 numpy = ["numpy"]
