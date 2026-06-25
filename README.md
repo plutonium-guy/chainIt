@@ -26,8 +26,8 @@ For optional dependencies:
 
 ```bash
 pip install stepcraft[numpy]    # numpy support
-pip install stepcraft[rsloop]   # fast Rust asyncio event loop
-pip install stepcraft[all]      # numpy + numba + rsloop
+pip install stepcraft[uvloop]   # fast libuv-based event loop (Unix)
+pip install stepcraft[all]      # numpy + numba + uvloop
 ```
 
 ## Features
@@ -238,10 +238,10 @@ def call_api(data):
 
 ### Async
 
-Every component supports async. For better performance, install [rsloop](https://github.com/RustedBytes/rsloop) (Rust asyncio event loop):
+Every component supports async. For better performance, install [uvloop](https://github.com/MagicStack/uvloop) (libuv-based asyncio event loop):
 
 ```bash
-pip install stepcraft[rsloop]
+pip install stepcraft[uvloop]
 ```
 
 ```python
@@ -254,7 +254,7 @@ async def fetch(url):
 
 pipeline = fetch | process | save
 
-# Uses rsloop when installed, falls back to asyncio.run otherwise
+# Uses uvloop when installed, falls back to asyncio.run otherwise
 result = pipeline.run_async("https://api.example.com")
 results = pipeline.map_async(urls)
 
@@ -262,12 +262,12 @@ results = pipeline.map_async(urls)
 result = run_async(pipeline.async_run("https://api.example.com"))
 ```
 
-You can also install rsloop as the default event loop policy:
+You can also install uvloop as the default event loop policy:
 
 ```python
-from stepcraft import rsloop_policy
+from stepcraft import uvloop_policy
 
-with rsloop_policy():
+with uvloop_policy():
     result = run_async(pipeline.async_run(seed))
 ```
 
@@ -399,7 +399,7 @@ functions are, keeping overhead on your pipeline logic rather than the framework
 | `get_context()` | Read the active pipeline's shared context |
 | `configure_pools(...)` | Set thread/process pool worker counts |
 | `StepHook` | `(name, input, output, dt)` callback type for `on_step` |
-| `run_async(coro)` | Run coroutine via rsloop (or asyncio fallback) |
+| `run_async(coro)` | Run coroutine via uvloop (or asyncio fallback) |
 | `pipeline.run_async(seed)` | Sync wrapper around `async_run` |
 | `pipeline.map_async(items)` | Sync wrapper around `async_map` |
 | `Graph.run_async(seed)` | Sync wrapper around graph `async_run` |
@@ -410,12 +410,12 @@ functions are, keeping overhead on your pipeline logic rather than the framework
 ```python
 pipeline.run(seed, on_step=hook)          # Execute synchronously
 pipeline.async_run(seed, on_step=hook)    # Execute asynchronously
-pipeline.run_async(seed)                  # async_run via rsloop (when installed)
+pipeline.run_async(seed)                  # async_run via uvloop (when installed)
 pipeline.run_detailed(seed, on_step=hook) # Execute with timing/history
 pipeline.async_run_detailed(seed)         # Async timing/history
 pipeline.map(items)          # Apply to each item
 pipeline.async_map(items)    # Apply to each item (async)
-pipeline.map_async(items)    # async_map via rsloop (when installed)
+pipeline.map_async(items)    # async_map via uvloop (when installed)
 pipeline.cancel()            # Cancel running pipeline
 len(pipeline)                # Number of steps
 pipeline[0]                  # Access step by index

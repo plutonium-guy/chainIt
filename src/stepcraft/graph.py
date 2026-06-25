@@ -213,7 +213,7 @@ class Graph:
         return results
 
     def run_async(self, seed: Any = None, parallel: bool = True) -> Dict[str, Any]:
-        """Execute graph asynchronously using rsloop when available."""
+        """Execute graph asynchronously using uvloop when available."""
         from .async_runtime import run_async as _run_async
         return _run_async(self.async_run(seed, parallel=parallel))
 

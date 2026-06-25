@@ -193,14 +193,14 @@ class Pipeline(Generic[T, R]):
     def run_async(
         self, seed: Any = None, *, on_step: Optional[StepHook] = None,
     ) -> R:
-        """Run the pipeline asynchronously using rsloop when available."""
+        """Run the pipeline asynchronously using uvloop when available."""
         from .async_runtime import run_async as _run_async
         return _run_async(self.async_run(seed, on_step=on_step))
 
     def map_async(
         self, items: Iterable[Any], *, on_step: Optional[StepHook] = None,
     ) -> List[Any]:
-        """Apply pipeline to each item via the async runtime (rsloop when available)."""
+        """Apply pipeline to each item via the async runtime (uvloop when available)."""
         from .async_runtime import run_async as _run_async
         return _run_async(self.async_map(items, on_step=on_step))
 

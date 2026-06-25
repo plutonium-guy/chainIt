@@ -1,11 +1,11 @@
 """Composable function pipeline framework for Python."""
 
 from .async_runtime import (
-    HAS_RSLOOP,
-    install_rsloop,
-    rsloop_policy,
+    HAS_UVLOOP,
+    install_uvloop,
     run_async,
-    uninstall_rsloop,
+    uninstall_uvloop,
+    uvloop_policy,
 )
 from .branching import ConditionalStep, SwitchStep
 from .constants import HAS_NUMPY, PIPE
@@ -51,8 +51,8 @@ __all__ = [
     # Errors
     'PipelineError', 'RetryExhaustedError', 'CircuitBreakerError', 'GraphCycleError',
     # Utilities
-    'cleanup_pools', 'configure_pools', 'HAS_NUMPY', 'HAS_RSLOOP', 'HAS_FREE_THREADING',
+    'cleanup_pools', 'configure_pools', 'HAS_NUMPY', 'HAS_UVLOOP', 'HAS_FREE_THREADING',
     'is_gil_enabled', 'threads_provide_true_parallelism',
-    'run_async', 'install_rsloop', 'uninstall_rsloop', 'rsloop_policy',
+    'run_async', 'install_uvloop', 'uninstall_uvloop', 'uvloop_policy',
     'apply_step_beartype', 'beartype_enabled',
 ]

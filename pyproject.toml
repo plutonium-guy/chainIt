@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stepcraft"
-version = "0.1.0"
+version = "0.1.1"
 description = "Composable pipeline framework with graph/DAG support"
 readme = "README.md"
 license = "MIT"
@@ -26,15 +26,17 @@ classifiers = [
 keywords = ["pipeline", "pipe", "dag", "graph", "workflow", "chain", "compose"]
 dependencies = [
     "beartype>=0.18",
-    "rsloop>=0.1.19",
+    # uvloop is a fast, stable libuv-based event loop (Unix only). On Windows
+    # it is skipped and stepcraft falls back to the stdlib asyncio loop.
+    "uvloop>=0.18; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
 numpy = ["numpy"]
 numba = ["numba"]
-rsloop = ["rsloop"]
+uvloop = ["uvloop>=0.18; sys_platform != 'win32'"]
 spec = ["pyyaml"]
-all = ["numpy", "numba", "rsloop", "pyyaml"]
+all = ["numpy", "numba", "uvloop>=0.18; sys_platform != 'win32'", "pyyaml"]
 
 [dependency-groups]
 dev = [
@@ -64,5 +66,5 @@ filterwarnings = [
     "ignore:.*:beartype.roar.BeartypeDecorHintPep585DeprecationWarning",
 ]
 markers = [
-    "rsloop: integration tests that require rsloop installed",
+    "uvloop: integration tests that require uvloop installed",
 ]

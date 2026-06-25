@@ -60,7 +60,7 @@ jobs:
         run: |
           uv run pytest tests/ -v -k "free_threading or parallel_auto or parallel or thread_parallel"
 
-  test-rsloop:
+  test-uvloop:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -74,10 +74,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Install with rsloop extra
+      - name: Install with uvloop extra
         run: |
-          uv sync --extra rsloop --group dev
+          uv sync --extra uvloop --group dev
 
-      - name: Run rsloop tests
+      - name: Run uvloop tests
         run: |
-          uv run pytest tests/ -v -m rsloop
+          uv run pytest tests/ -v -m uvloop

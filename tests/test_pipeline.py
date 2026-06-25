@@ -8,7 +8,7 @@ from pipeline import (
     FanOutStep, FanInStep, PipelineError, ExecutionResult,
     PipelineBuilder, MapReduceStep, Node, node, ConditionalStep,
     SwitchStep, Graph, GraphCycleError,
-    HAS_RSLOOP, run_async, install_rsloop, uninstall_rsloop, rsloop_policy,
+    HAS_UVLOOP, run_async, install_uvloop, uninstall_uvloop, uvloop_policy,
 )
 
 # Try numpy — skip tests that need it if missing
@@ -1689,14 +1689,14 @@ def test_pipeline_shim_reexports():
 
 
 # =============================================================================
-# rsloop async runtime
+# uvloop async runtime
 # =============================================================================
 
-def test_run_async_fallback_without_rsloop(monkeypatch):
-    """run_async falls back to asyncio.run when rsloop is unavailable."""
+def test_run_async_fallback_without_uvloop(monkeypatch):
+    """run_async falls back to asyncio.run when uvloop is unavailable."""
     import stepcraft.async_runtime as ar
 
-    monkeypatch.setattr(ar, "HAS_RSLOOP", False)
+    monkeypatch.setattr(ar, "HAS_UVLOOP", False)
 
     async def coro():
         return 7
@@ -1704,9 +1704,9 @@ def test_run_async_fallback_without_rsloop(monkeypatch):
     assert ar.run_async(coro()) == 7
 
 
-@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
-@pytest.mark.rsloop
-def test_run_async_with_rsloop():
+@pytest.mark.skipif(not HAS_UVLOOP, reason="uvloop not installed")
+@pytest.mark.uvloop
+def test_run_async_with_uvloop():
     async def coro():
         await asyncio.sleep(0.01)
         return 99
@@ -1714,8 +1714,8 @@ def test_run_async_with_rsloop():
     assert run_async(coro()) == 99
 
 
-@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
-@pytest.mark.rsloop
+@pytest.mark.skipif(not HAS_UVLOOP, reason="uvloop not installed")
+@pytest.mark.uvloop
 def test_pipeline_run_async():
     @piped
     async def add_one(x):
@@ -1730,8 +1730,8 @@ def test_pipeline_run_async():
     assert pipeline.run_async(5) == 12
 
 
-@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
-@pytest.mark.rsloop
+@pytest.mark.skipif(not HAS_UVLOOP, reason="uvloop not installed")
+@pytest.mark.uvloop
 def test_pipeline_map_async():
     @piped
     async def double(x):
@@ -1741,8 +1741,8 @@ def test_pipeline_map_async():
     assert p.map_async([1, 2, 3]) == [2, 4, 6]
 
 
-@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
-@pytest.mark.rsloop
+@pytest.mark.skipif(not HAS_UVLOOP, reason="uvloop not installed")
+@pytest.mark.uvloop
 def test_graph_run_async():
     g = (
         Graph()
@@ -1750,19 +1750,19 @@ def test_graph_run_async():
         .add_node("b", piped(lambda x: x * 2))
         .add_edge("a", "b")
     )
-    # parallel=False avoids thread-pool + rsloop deadlocks on Linux CI.
+    # parallel=False avoids thread-pool + uvloop deadlocks on Linux CI.
     results = g.run_async(seed=5, parallel=False)
     assert results["a"] == 6
     assert results["b"] == 12
 
 
-@pytest.mark.skipif(not HAS_RSLOOP, reason="rsloop not installed")
-@pytest.mark.rsloop
-def test_rsloop_policy_context():
+@pytest.mark.skipif(not HAS_UVLOOP, reason="uvloop not installed")
+@pytest.mark.uvloop
+def test_uvloop_policy_context():
     async def coro():
-        return asyncio.get_running_loop().__class__.__module__.startswith("rsloop")
+        return asyncio.get_running_loop().__class__.__module__.startswith("uvloop")
 
-    with rsloop_policy():
+    with uvloop_policy():
         assert run_async(coro()) is True
 
 
