@@ -194,4 +194,16 @@ Do not commit unless I ask. Follow existing code conventions.
 - [x] `PipeStep.copy()` + immutable decorators
 - [x] `async_run_detailed()`
 - [x] Tests for above
-- [ ] Commit manager pass (if user approves)
+- [x] Commit manager pass (if user approves) — `3c7e1f4`, pushed
+
+---
+
+## Scheduled trigger (12:51 AM IST)
+
+- **Set:** 2026-06-24 ~21:38 IST
+- **Fires:** 2026-06-25 00:51:00 Asia/Kolkata
+- **Script:** `scripts/trigger_claude_code_at_1251.sh`
+- **Wake sentinel:** `AGENT_LOOP_WAKE_CLAUDE_CODE`
+- **Remote:** `origin/working_barnch` @ `3c7e1f4`
+
+To cancel: kill the background sleeper PID shown in terminal metadata.

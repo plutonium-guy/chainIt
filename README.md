@@ -69,13 +69,36 @@ results = pipeline.map(["https://api.example.com/1", "https://api.example.com/2"
 Options for `@piped`:
 
 ```python
-@piped(parallel='thread')     # thread pool for collections
-@piped(parallel='process')    # process pool (pickleable functions)
-@piped(batch_size=1024)       # batch incoming iterables
-@piped(timeout=5.0)           # per-step timeout in seconds
-@piped(schema=int)            # validate output type
-@piped(jit=True)              # numba JIT compilation
-@piped(vectorize=True)        # numpy vectorization
+@piped(parallel='thread')         # thread pool for collections
+@piped(parallel='process')        # process pool (pickleable functions)
+@piped(parallel='auto')           # threads on free-threaded 3.14t, else process
+@piped(batch_size=1024)           # batch incoming iterables
+@piped(timeout=5.0)               # per-step timeout in seconds
+@piped(cancel_on_timeout=True)    # best-effort cancel on timeout (see Parallelism)
+@piped(map=False)                 # disable per-element auto-mapping of list inputs
+@piped(schema=int)                # validate output type
+@piped(jit=True)                  # numba JIT compilation
+@piped(vectorize=True)            # numpy vectorization
+```
+
+### Auto-mapping list inputs
+
+A default `@piped` step applied to a **list** maps element-wise; pass `map=False`
+(alias of `auto_map=False`) to receive the whole list as one argument. Tuples are
+treated as structural values and are never split (e.g. graph fan-in).
+
+```python
+@piped
+def double(x):
+    return x * 2
+
+double.run([1, 2, 3])              # [2, 4, 6]  — auto-mapped
+
+@piped(map=False)
+def total(xs):
+    return sum(xs)
+
+total.run([1, 2, 3])              # 6  — whole list
 ```
 
 ### OOP Nodes
@@ -248,6 +271,95 @@ with rsloop_policy():
     result = run_async(pipeline.async_run(seed))
 ```
 
+### Declarative specs (YAML / JSON)
+
+Build pipelines and graphs from a spec file (`pip install pipecraft[spec]`):
+
+```python
+from pipecraft import Pipeline, Graph
+
+pipe = Pipeline.from_spec("pipeline.yaml")   # { steps: [...] }
+graph = Graph.from_spec("graph.yaml")        # { graph: { nodes:, edges: } }
+```
+
+```yaml
+# pipeline.yaml
+steps:
+  - import: mypkg:fetch
+  - import: mypkg:parse
+    parallel: thread
+context:
+  request_id: abc          # optional shared context
+
+# graph.yaml
+graph:
+  nodes:
+    a: { import: mypkg:fetch }
+    b: { import: mypkg:parse }
+  edges:
+    - [a, b]
+```
+
+### Step hooks (observability)
+
+Pass `on_step` to any run method to observe each step without wrapping functions.
+Hook errors are logged and never break the run.
+
+```python
+def on_step(name, step_input, step_output, step_dt):
+    print(f"{name} took {step_dt*1000:.1f}ms")
+
+pipeline.run(seed, on_step=on_step)
+await pipeline.async_run(seed, on_step=on_step)
+graph.run(seed, on_step=on_step)
+```
+
+### Shared context
+
+Attach a context dict to a pipeline; steps (and `Node.setup`) read it via `get_context()`.
+Context is set on run entry and reset on exit.
+
+```python
+from pipecraft import Pipeline, piped, get_context
+
+@piped
+def step(x):
+    rid = get_context().get("request_id")
+    return x
+
+Pipeline([step], context={"request_id": "abc"}).run(1)
+```
+
+### Parallelism: GIL vs free-threading vs processes
+
+- `parallel='thread'` — best for I/O-bound work. On the standard (GIL) build,
+  threads do **not** give CPU parallelism for pure-Python code.
+- `parallel='process'` — true multi-core for CPU-bound work; functions must be
+  pickleable (use module-level functions, not lambdas).
+- `parallel='auto'` — resolves to `'thread'` on free-threaded CPython 3.14t
+  (no-GIL, true multi-core threads) and to `'process'` otherwise.
+
+On a free-threaded 3.14t interpreter, `parallel='process'` is automatically
+downgraded to `'thread'`, since threads already provide true parallelism.
+
+```python
+from pipecraft import (
+    HAS_FREE_THREADING, is_gil_enabled, threads_provide_true_parallelism,
+    configure_pools, cleanup_pools,
+)
+
+# Tune pool sizes (applies on next pool creation; call cleanup_pools() to recreate)
+configure_pools(thread_workers=8, process_workers=4)
+```
+
+### Runtime type-checking (beartype)
+
+Every public function and method is decorated by
+[beartype](https://beartype.readthedocs.io/) via its import hook, giving
+near-zero-overhead runtime type-checking of arguments and return values. It is a
+declared dependency and always on; the implicit numeric tower is enabled so
+`int` is accepted where `float` is annotated.
+
 ## API Reference
 
 | Function / Class | Description |
@@ -264,6 +376,11 @@ with rsloop_policy():
 | `FanOutStep` | Broadcast to parallel branches |
 | `FanInStep` | Merge branch outputs |
 | `MapReduceStep` | Batched map-reduce |
+| `Pipeline.from_spec(file)` | Build a pipeline from a YAML/JSON spec |
+| `Graph.from_spec(file)` | Build a graph from a YAML/JSON `graph:` spec |
+| `get_context()` | Read the active pipeline's shared context |
+| `configure_pools(...)` | Set thread/process pool worker counts |
+| `StepHook` | `(name, input, output, dt)` callback type for `on_step` |
 | `run_async(coro)` | Run coroutine via rsloop (or asyncio fallback) |
 | `pipeline.run_async(seed)` | Sync wrapper around `async_run` |
 | `pipeline.map_async(items)` | Sync wrapper around `async_map` |
@@ -273,10 +390,11 @@ with rsloop_policy():
 ### Pipeline Methods
 
 ```python
-pipeline.run(seed)           # Execute synchronously
-pipeline.async_run(seed)     # Execute asynchronously
-pipeline.run_async(seed)     # async_run via rsloop (when installed)
-pipeline.run_detailed(seed)  # Execute with timing/history
+pipeline.run(seed, on_step=hook)          # Execute synchronously
+pipeline.async_run(seed, on_step=hook)    # Execute asynchronously
+pipeline.run_async(seed)                  # async_run via rsloop (when installed)
+pipeline.run_detailed(seed, on_step=hook) # Execute with timing/history
+pipeline.async_run_detailed(seed)         # Async timing/history
 pipeline.map(items)          # Apply to each item
 pipeline.async_map(items)    # Apply to each item (async)
 pipeline.map_async(items)    # async_map via rsloop (when installed)
@@ -291,7 +409,7 @@ pipeline[0]                  # Access step by index
 git clone https://github.com/amiyamandal-dev/chainIt.git
 cd chainIt
 python -m venv .venv && source .venv/bin/activate
-pip install pytest numpy
+pip install pytest numpy pyyaml beartype
 pip install -e .
 pytest tests/ -v
 ```

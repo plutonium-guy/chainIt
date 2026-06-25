@@ -29,12 +29,38 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv
-          uv pip install pytest numpy pyyaml
+          uv pip install pytest numpy pyyaml beartype
           uv pip install -e .
 
       - name: Run tests
         run: |
           uv run pytest tests/ -v
+
+  test-free-threading:
+    # Free-threaded (no-GIL) CPython 3.14t. Skips gracefully if the runner
+    # cannot provision the build.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up free-threaded Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14t"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: |
+          uv venv --python 3.14t
+          uv pip install pytest beartype
+          uv pip install -e .
+
+      - name: Run free-threading + parallel tests
+        run: |
+          uv run pytest tests/ -v -k "free_threading or parallel_auto or parallel or thread_parallel"
 
   test-rsloop:
     runs-on: ubuntu-latest
@@ -52,7 +78,7 @@ jobs:
       - name: Install with rsloop extra
         run: |
           uv venv
-          uv pip install pytest numpy pyyaml
+          uv pip install pytest numpy pyyaml beartype
           uv pip install -e ".[rsloop]"
 
       - name: Run rsloop tests

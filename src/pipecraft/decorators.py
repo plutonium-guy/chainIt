@@ -15,12 +15,19 @@ def piped(
     batch_size: int = 1,
     parallel: Optional[str] = None,
     auto_map: bool = True,
+    map: Optional[bool] = None,
     timeout: Optional[float] = None,
+    cancel_on_timeout: bool = False,
     schema: Optional[type] = None,
     jit: bool = False,
     vectorize: bool = False,
 ) -> Union[PipeStep, Callable[[Callable], PipeStep]]:
-    """Create a PipeStep from a function."""
+    """Create a PipeStep from a function.
+
+    ``map`` is a README-friendly alias for ``auto_map``; when given it wins.
+    """
+    if map is not None:
+        auto_map = map
 
     def decorator(f: Callable) -> PipeStep:
         optimized = f
@@ -63,6 +70,7 @@ def piped(
             parallel=parallel,
             auto_map=auto_map,
             timeout=timeout,
+            cancel_on_timeout=cancel_on_timeout,
             schema=schema,
         )
 

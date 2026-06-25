@@ -24,7 +24,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 keywords = ["pipeline", "pipe", "dag", "graph", "workflow", "chain", "compose"]
-dependencies = []
+dependencies = ["beartype>=0.18"]
 
 [project.optional-dependencies]
 numpy = ["numpy"]
@@ -45,4 +45,7 @@ packages = ["src/pipecraft"]
 pythonpath = [
     "src",
     ".",
+]
+filterwarnings = [
+    "ignore::beartype.roar.BeartypeDecorHintPep585DeprecationWarning",
 ]

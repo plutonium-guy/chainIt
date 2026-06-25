@@ -1690,5 +1690,306 @@ def test_rsloop_policy_context():
     uninstall_rsloop()
 
 
+# =============================================================================
+# map= alias (README-friendly auto_map)
+# =============================================================================
+
+def test_map_alias_disables_auto_map():
+    @piped(map=False)
+    def length(xs):
+        return len(xs)
+
+    assert length.run([1, 2, 3]) == 3
+
+
+def test_map_alias_true_keeps_auto_map():
+    @piped(map=True)
+    def double(x):
+        return x * 2
+
+    assert double.run([1, 2, 3]) == [2, 4, 6]
+
+
+# =============================================================================
+# Step hooks / observability
+# =============================================================================
+
+def test_on_step_hook_called():
+    @piped
+    def add_one(x):
+        return x + 1
+
+    @piped
+    def double(x):
+        return x * 2
+
+    events = []
+
+    def hook(name, inp, out, dt):
+        events.append((name, inp, out))
+        assert isinstance(dt, float) and dt >= 0
+
+    pipeline = add_one | double
+    result = pipeline.run(5, on_step=hook)
+    assert result == 12
+    assert events == [("add_one", 5, 6), ("double", 6, 12)]
+
+
+def test_on_step_hook_run_detailed():
+    @piped
+    def add_one(x):
+        return x + 1
+
+    calls = []
+    pipeline = Pipeline([add_one])
+    result = pipeline.run_detailed(5, on_step=lambda *a: calls.append(a))
+    assert result.value == 6
+    assert len(calls) == 1
+    assert calls[0][0] == "add_one"
+
+
+def test_on_step_hook_async():
+    @piped
+    async def add_one(x):
+        return x + 1
+
+    events = []
+    pipeline = Pipeline([add_one])
+    result = asyncio.run(pipeline.async_run(5, on_step=lambda *a: events.append(a)))
+    assert result == 6
+    assert events[0][0] == "add_one"
+
+
+def test_on_step_hook_error_does_not_break_pipeline(caplog):
+    @piped
+    def add_one(x):
+        return x + 1
+
+    def bad_hook(name, inp, out, dt):
+        raise RuntimeError("hook boom")
+
+    with caplog.at_level(logging.WARNING, logger="pipecraft.hooks"):
+        result = Pipeline([add_one]).run(5, on_step=bad_hook)
+    assert result == 6
+    assert any("hook" in r.message.lower() for r in caplog.records)
+
+
+def test_graph_on_step_hook():
+    g = (
+        Graph()
+        .add_node("a", piped(lambda x: x + 1))
+        .add_node("b", piped(lambda x: x * 2))
+        .add_edge("a", "b")
+    )
+    seen = []
+    results = g.run(seed=5, on_step=lambda name, *_: seen.append(name))
+    assert results["b"] == 12
+    assert set(seen) == {"a", "b"}
+
+
+# =============================================================================
+# Circuit breaker — half-open single probe
+# =============================================================================
+
+def test_circuit_breaker_half_open_single_probe():
+    counter = Counter()
+
+    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)
+    @piped
+    def always_fails(x):
+        counter.increment()
+        raise MockException("fail")
+
+    # Trip the breaker (threshold=2).
+    for i in range(2):
+        with pytest.raises(PipelineError):
+            always_fails.run(i)
+    assert counter.count == 2
+
+    # Open: short-circuited, function not invoked.
+    with pytest.raises(PipelineError):
+        always_fails.run(99)
+    assert counter.count == 2
+
+    time.sleep(0.15)
+
+    # Half-open: exactly ONE probe runs, fails, breaker re-opens.
+    with pytest.raises(PipelineError):
+        always_fails.run(1)
+    assert counter.count == 3
+
+    # Re-opened immediately: no second probe.
+    with pytest.raises(PipelineError):
+        always_fails.run(2)
+    assert counter.count == 3
+
+
+def test_circuit_breaker_half_open_probe_success_closes():
+    counter = Counter()
+
+    @circuit_breaker(failure_threshold=2, recovery_timeout=0.1)
+    @piped
+    def sometimes(x):
+        counter.increment()
+        if x < 0:
+            raise MockException("neg")
+        return x * 2
+
+    for x in (-1, -2):
+        with pytest.raises(PipelineError):
+            sometimes.run(x)
+
+    time.sleep(0.15)
+    # Successful probe closes the breaker.
+    assert sometimes.run(5) == 10
+    assert sometimes.run(7) == 14
+
+
+# =============================================================================
+# Configurable pools
+# =============================================================================
+
+def test_configure_pools_respects_max_workers():
+    from pipeline import configure_pools, cleanup_pools
+    from pipecraft.pools import _get_pool
+
+    cleanup_pools()
+    configure_pools(thread_workers=2)
+    try:
+        pool = _get_pool('thread')
+        assert pool._max_workers == 2
+    finally:
+        cleanup_pools()
+        configure_pools(thread_workers=None, process_workers=None)
+
+
+# =============================================================================
+# cancel_on_timeout
+# =============================================================================
+
+def test_cancel_on_timeout_still_raises():
+    @piped(timeout=0.05, cancel_on_timeout=True)
+    def slow(x):
+        time.sleep(0.3)
+        return x
+
+    with pytest.raises(PipelineError):
+        slow.run(1)
+
+
+# =============================================================================
+# Pipeline shared context
+# =============================================================================
+
+def test_pipeline_shared_context():
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped
+    def step(x):
+        seen.update(get_context())
+        return x + 1
+
+    p = Pipeline([step], context={"request_id": "abc"})
+    assert p.run(1) == 2
+    assert seen["request_id"] == "abc"
+
+
+def test_context_reset_after_run():
+    from pipeline import get_context
+
+    p = Pipeline([piped(lambda x: x)], context={"k": "v"})
+    p.run(1)
+    assert get_context() == {}
+
+
+def test_node_setup_reads_context():
+    from pipeline import get_context
+
+    captured = {}
+
+    class N(Node):
+        def setup(self):
+            captured.update(get_context())
+
+        def process(self, x):
+            return x
+
+    Pipeline([N()], context={"u": 1}).run(5)
+    assert captured["u"] == 1
+
+
+def test_context_merged_on_compose():
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped
+    def step(x):
+        seen.update(get_context())
+        return x
+
+    left = Pipeline([piped(lambda x: x)], context={"a": 1})
+    right = Pipeline([step], context={"b": 2})
+    (left | right).run(0)
+    assert seen == {"a": 1, "b": 2}
+
+
+def test_context_async():
+    from pipeline import get_context
+
+    seen = {}
+
+    @piped
+    async def step(x):
+        seen.update(get_context())
+        return x
+
+    p = Pipeline([step], context={"trace": "xyz"})
+    asyncio.run(p.async_run(0))
+    assert seen["trace"] == "xyz"
+
+
+# =============================================================================
+# Graph from_spec
+# =============================================================================
+
+def test_graph_from_spec_yaml():
+    g = Graph.from_spec(str(FIXTURES / "graph_diamond.yaml"))
+    results = g.run(seed=5)
+    assert results["a"] == 6
+    assert results["b"] == 12
+    assert results["c"] == 7
+    assert results["d"] == 19  # sum((12, 7))
+
+
+def test_graph_from_spec_registry():
+    g = Graph.from_spec(
+        str(FIXTURES / "graph_diamond.yaml"),
+        registry={"tests.spec_fixtures:inc": piped(lambda x: x + 1)},
+    )
+    results = g.run(seed=5)
+    assert results["a"] == 6
+
+
+def test_pipeline_from_spec_rejects_graph(tmp_path):
+    spec = tmp_path / "g.yaml"
+    spec.write_text(
+        "graph:\n"
+        "  nodes:\n"
+        "    a:\n"
+        "      import: tests.spec_fixtures:inc\n"
+    )
+    with pytest.raises(ValueError):
+        Pipeline.from_spec(str(spec))
+
+
+def test_shim_exports_new_apis():
+    import pipeline
+    for name in ("get_context", "configure_pools", "StepHook"):
+        assert hasattr(pipeline, name), f"pipeline shim missing {name}"
+
+
 if __name__ == "__main__":
     pytest.main(["-v", "-s", "--durations=0"])

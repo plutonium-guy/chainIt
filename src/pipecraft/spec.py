@@ -57,7 +57,10 @@ def _resolve_callable(
 
 def _piped_options(entry: dict) -> dict:
     opts = dict(entry.get("piped") or {})
-    for key in ("batch_size", "parallel", "timeout", "schema", "jit", "vectorize"):
+    for key in (
+        "batch_size", "parallel", "auto_map", "map", "timeout",
+        "cancel_on_timeout", "schema", "jit", "vectorize",
+    ):
         if key in entry and key not in opts:
             opts[key] = entry[key]
     return opts
@@ -138,6 +141,11 @@ def build_pipeline_from_spec(
     spec: dict,
     registry: Optional[Mapping[str, Any]] = None,
 ):
+    if "graph" in spec and "steps" not in spec:
+        raise ValueError(
+            "Spec defines a 'graph:' block; load it with Graph.from_spec(), "
+            "not Pipeline.from_spec()"
+        )
     steps_spec = spec.get("steps")
     if not isinstance(steps_spec, list) or not steps_spec:
         raise ValueError("Pipeline spec must include a non-empty 'steps' list")
@@ -145,7 +153,36 @@ def build_pipeline_from_spec(
     from .pipeline import Pipeline
 
     steps = [_build_step(entry, registry) for entry in steps_spec]
-    return Pipeline(steps)
+    context = spec.get("context")
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("Pipeline spec 'context' must be a mapping")
+    return Pipeline(steps, context=context)
+
+
+def build_graph_from_spec(
+    spec: dict,
+    registry: Optional[Mapping[str, Any]] = None,
+):
+    graph_spec = spec.get("graph")
+    if not isinstance(graph_spec, dict):
+        raise ValueError("Graph spec must include a 'graph' mapping")
+
+    nodes = graph_spec.get("nodes")
+    if not isinstance(nodes, dict) or not nodes:
+        raise ValueError("Graph spec must include a non-empty 'nodes' mapping")
+
+    from .graph import Graph
+
+    graph = Graph()
+    for name, entry in nodes.items():
+        graph.add_node(name, _build_step(entry, registry))
+
+    for edge in graph_spec.get("edges", []) or []:
+        if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+            raise ValueError(f"Each edge must be a [from, to] pair, got {edge!r}")
+        graph.add_edge(edge[0], edge[1])
+
+    return graph
 
 
 def load_pipeline_from_spec(
@@ -154,3 +191,11 @@ def load_pipeline_from_spec(
 ):
     spec = _load_spec_file(spec_file)
     return build_pipeline_from_spec(spec, registry)
+
+
+def load_graph_from_spec(
+    spec_file: str | Path,
+    registry: Optional[Mapping[str, Any]] = None,
+):
+    spec = _load_spec_file(spec_file)
+    return build_graph_from_spec(spec, registry)

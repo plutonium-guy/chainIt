@@ -1,0 +1,15 @@
+graph:
+  nodes:
+    a:
+      import: tests.spec_fixtures:inc
+    b:
+      import: tests.spec_fixtures:double
+    c:
+      import: tests.spec_fixtures:inc
+    d:
+      import: tests.spec_fixtures:sum_all
+  edges:
+    - [a, b]
+    - [a, c]
+    - [b, d]
+    - [c, d]

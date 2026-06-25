@@ -17,6 +17,7 @@ class RetryConfig:
 class CircuitBreakerConfig:
     threshold: int = 5
     timeout: float = 60.0
+    half_open_max_calls: int = 1
 
 
 class CircuitState(Enum):

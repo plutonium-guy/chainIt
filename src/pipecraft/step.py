@@ -39,11 +39,13 @@ class PipeStep(Generic[T, R]):
 
     # Extra
     timeout: Optional[float] = None
+    cancel_on_timeout: bool = False
     schema: Optional[type] = None
 
     # Internal state
     _circuit_state: CircuitState = field(default=CircuitState.CLOSED, init=False)
     _failure_count: int = field(default=0, init=False)
+    _half_open_calls: int = field(default=0, init=False)
     _last_failure_time: float = field(default=0.0, init=False)
     _func_name: str = field(default="", init=False)
     _is_async: bool = field(default=False, init=False)
@@ -108,7 +110,7 @@ class PipeStep(Generic[T, R]):
 
         return tuple(args), kwargs
 
-    def __call__(self, *args, **kwargs) -> 'PipeStep[T, R]':
+    def __call__(self, *args, **kwargs) -> 'PipeStep':
         merged_kwargs = dict(self._kwargs)
         merged_kwargs.update(kwargs)
         for k, v in self._kwargs.items():
@@ -126,10 +128,11 @@ class PipeStep(Generic[T, R]):
             retry_config=self.retry_config,
             circuit_config=self.circuit_config,
             timeout=self.timeout,
+            cancel_on_timeout=self.cancel_on_timeout,
             schema=self.schema,
         )
 
-    def copy(self, **overrides: Any) -> 'PipeStep[T, R]':
+    def copy(self, **overrides: Any) -> 'PipeStep':
         """Return a new step with fresh breaker state (for decorators / reuse)."""
         fields = {
             'func': self.func,
@@ -141,6 +144,7 @@ class PipeStep(Generic[T, R]):
             'retry_config': self.retry_config,
             'circuit_config': self.circuit_config,
             'timeout': self.timeout,
+            'cancel_on_timeout': self.cancel_on_timeout,
             'schema': self.schema,
         }
         fields.update(overrides)
@@ -196,7 +200,14 @@ class PipeStep(Generic[T, R]):
                 if self.timeout is not None:
                     pool = _get_pool('thread')
                     fut = pool.submit(self._invoke_function, input_value)
-                    result = fut.result(timeout=self.timeout)
+                    try:
+                        result = fut.result(timeout=self.timeout)
+                    except Exception:
+                        # Best-effort: cancel only succeeds if the worker has
+                        # not started; a running thread cannot be interrupted.
+                        if self.cancel_on_timeout:
+                            fut.cancel()
+                        raise
                 else:
                     result = self._invoke_function(input_value)
 
@@ -360,14 +371,25 @@ class PipeStep(Generic[T, R]):
         return results
 
     def _check_circuit_breaker(self) -> bool:
+        """Return True if the call must be short-circuited (breaker open)."""
         if not self.circuit_config:
             return False
+
         if self._circuit_state == CircuitState.OPEN:
             if time.time() - self._last_failure_time >= self.circuit_config.timeout:
+                # Recovery window elapsed: move to HALF_OPEN for limited probing.
                 object.__setattr__(self, '_circuit_state', CircuitState.HALF_OPEN)
                 object.__setattr__(self, '_failure_count', 0)
-                return False
-            return True
+                object.__setattr__(self, '_half_open_calls', 0)
+            else:
+                return True
+
+        if self._circuit_state == CircuitState.HALF_OPEN:
+            if self._half_open_calls >= self.circuit_config.half_open_max_calls:
+                return True  # probe quota exhausted; keep blocking until verdict
+            object.__setattr__(self, '_half_open_calls', self._half_open_calls + 1)
+            return False
+
         return False
 
     def _record_failure(self):
@@ -375,13 +397,19 @@ class PipeStep(Generic[T, R]):
             return
         object.__setattr__(self, '_failure_count', self._failure_count + 1)
         object.__setattr__(self, '_last_failure_time', time.time())
-        if self._failure_count >= self.circuit_config.threshold:
+        # A failed half-open probe re-opens immediately; otherwise trip on threshold.
+        if (
+            self._circuit_state == CircuitState.HALF_OPEN
+            or self._failure_count >= self.circuit_config.threshold
+        ):
             object.__setattr__(self, '_circuit_state', CircuitState.OPEN)
+            object.__setattr__(self, '_half_open_calls', 0)
 
     def _reset_circuit_breaker(self):
         if self.circuit_config:
             object.__setattr__(self, '_circuit_state', CircuitState.CLOSED)
             object.__setattr__(self, '_failure_count', 0)
+            object.__setattr__(self, '_half_open_calls', 0)
 
     def __or__(self, other):
         from .pipeline import Pipeline

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence
+from contextlib import contextmanager
+from typing import Any, Dict, Generic, Iterable, Iterator, List, Optional, Sequence
 
 from .constants import R, T
+from .context import _reset_context, _set_context
+from .hooks import StepHook, _call_hook
 from .pools import cleanup_pools
 from .result import ExecutionResult
 
@@ -15,7 +18,7 @@ class PipelineBuilder(Generic[T]):
     def __init__(self):
         self._steps: List[Any] = []
 
-    def add(self, step) -> 'PipelineBuilder[T]':
+    def add(self, step) -> 'PipelineBuilder':
         self._steps.append(step)
         return self
 
@@ -27,16 +30,41 @@ class PipelineBuilder(Generic[T]):
 class Pipeline(Generic[T, R]):
     """Linear pipeline with advanced execution modes."""
 
-    __slots__ = ('steps', '_cancel_event')
+    __slots__ = ('steps', '_cancel_event', '_context')
 
-    def __init__(self, steps: Sequence[Any]):
+    def __init__(
+        self,
+        steps: Sequence[Any],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ):
         self.steps = tuple(steps)
         self._cancel_event = None
+        self._context = context
 
-    def __or__(self, other) -> 'Pipeline[T, R]':
+    def _merge_context(self, other: 'Pipeline') -> Optional[Dict[str, Any]]:
+        if self._context is None and other._context is None:
+            return None
+        return {**(self._context or {}), **(other._context or {})}
+
+    def __or__(self, other) -> 'Pipeline':
         if isinstance(other, Pipeline):
-            return Pipeline([*self.steps, *other.steps])
-        return Pipeline([*self.steps, other])
+            return Pipeline(
+                [*self.steps, *other.steps], context=self._merge_context(other)
+            )
+        return Pipeline([*self.steps, other], context=self._context)
+
+    @contextmanager
+    def _activate_context(self) -> Iterator[None]:
+        """Make ``self._context`` visible to steps via ``get_context()``."""
+        if self._context is None:
+            yield
+            return
+        token = _set_context(self._context)
+        try:
+            yield
+        finally:
+            _reset_context(token)
 
     def __call__(self, seed: Any = None) -> R:
         return self.run(seed)
@@ -74,41 +102,59 @@ class Pipeline(Generic[T, R]):
     def _is_cancelled(self) -> bool:
         return self._cancel_event is not None and self._cancel_event.is_set()
 
-    def run(self, seed: Any = None) -> R:
+    def _prepare_step(self, step: Any) -> None:
+        if self._cancel_event is not None and hasattr(step, '_cancel_event'):
+            object.__setattr__(step, '_cancel_event', self._cancel_event)
+        if self._is_cancelled():
+            raise asyncio.CancelledError()
+
+    def run(self, seed: Any = None, *, on_step: Optional[StepHook] = None) -> R:
         value = seed
-        for step in self.steps:
-            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
-                object.__setattr__(step, '_cancel_event', self._cancel_event)
-            if self._is_cancelled():
-                raise asyncio.CancelledError()
-            value = step.run(value)
+        with self._activate_context():
+            for step in self.steps:
+                self._prepare_step(step)
+                step_input = value
+                t0 = time.perf_counter()
+                value = step.run(step_input)
+                if on_step is not None:
+                    name = getattr(step, '_func_name', type(step).__name__)
+                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
         return value
 
-    async def async_run(self, seed: Any = None) -> R:
+    async def async_run(
+        self, seed: Any = None, *, on_step: Optional[StepHook] = None
+    ) -> R:
         value = seed
-        for step in self.steps:
-            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
-                object.__setattr__(step, '_cancel_event', self._cancel_event)
-            if self._is_cancelled():
-                raise asyncio.CancelledError()
-            if hasattr(step, 'async_run'):
-                value = await step.async_run(value)
-            else:
-                value = step.run(value)
+        with self._activate_context():
+            for step in self.steps:
+                self._prepare_step(step)
+                step_input = value
+                t0 = time.perf_counter()
+                if hasattr(step, 'async_run'):
+                    value = await step.async_run(step_input)
+                else:
+                    value = step.run(step_input)
+                if on_step is not None:
+                    name = getattr(step, '_func_name', type(step).__name__)
+                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
         return value
 
-    def run_detailed(self, seed: Any = None) -> ExecutionResult[R]:
+    def run_detailed(
+        self, seed: Any = None, *, on_step: Optional[StepHook] = None
+    ) -> ExecutionResult[R]:
         history = []
         value = seed
         start_time = time.perf_counter()
-        for step in self.steps:
-            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
-                object.__setattr__(step, '_cancel_event', self._cancel_event)
-            if self._is_cancelled():
-                raise asyncio.CancelledError()
-            value = step.run(value)
-            name = getattr(step, '_func_name', type(step).__name__)
-            history.append((name, value))
+        with self._activate_context():
+            for step in self.steps:
+                self._prepare_step(step)
+                step_input = value
+                t0 = time.perf_counter()
+                value = step.run(step_input)
+                name = getattr(step, '_func_name', type(step).__name__)
+                history.append((name, value))
+                if on_step is not None:
+                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
         execution_time = time.perf_counter() - start_time
         return ExecutionResult(
             value=value,
@@ -117,21 +163,25 @@ class Pipeline(Generic[T, R]):
             n=len(self.steps),
         )
 
-    async def async_run_detailed(self, seed: Any = None) -> ExecutionResult[R]:
+    async def async_run_detailed(
+        self, seed: Any = None, *, on_step: Optional[StepHook] = None
+    ) -> ExecutionResult[R]:
         history = []
         value = seed
         start_time = time.perf_counter()
-        for step in self.steps:
-            if self._cancel_event is not None and hasattr(step, '_cancel_event'):
-                object.__setattr__(step, '_cancel_event', self._cancel_event)
-            if self._is_cancelled():
-                raise asyncio.CancelledError()
-            if hasattr(step, 'async_run'):
-                value = await step.async_run(value)
-            else:
-                value = step.run(value)
-            name = getattr(step, '_func_name', type(step).__name__)
-            history.append((name, value))
+        with self._activate_context():
+            for step in self.steps:
+                self._prepare_step(step)
+                step_input = value
+                t0 = time.perf_counter()
+                if hasattr(step, 'async_run'):
+                    value = await step.async_run(step_input)
+                else:
+                    value = step.run(step_input)
+                name = getattr(step, '_func_name', type(step).__name__)
+                history.append((name, value))
+                if on_step is not None:
+                    _call_hook(on_step, name, step_input, value, time.perf_counter() - t0)
         execution_time = time.perf_counter() - start_time
         return ExecutionResult(
             value=value,
