@@ -9,6 +9,7 @@ from typing import Any, Callable, Generic, Iterable, List, Optional, Tuple
 from .async_concurrency import gather_limited
 from .constants import R, T
 from .context import wrap_worker
+from .execution import default_runner
 from .pools import _get_pool
 from .runtime import resolve_parallel_kind
 
@@ -58,9 +59,7 @@ class FanOutStep(Generic[T, R]):
             if hasattr(branch, 'async_run'):
                 tasks.append(branch.async_run(value))
             else:
-                loop = asyncio.get_running_loop()
-                call = wrap_worker(lambda b=branch, v=value: b.run(v))
-                tasks.append(loop.run_in_executor(None, call))
+                tasks.append(default_runner(lambda b=branch, v=value: b.run(v)))
         return tuple(await gather_limited(tasks, max_concurrency=self.max_concurrency))
 
     @property
@@ -103,10 +102,14 @@ class MapReduceStep(Generic[T, R]):
     mapper: Callable[[T], Any]
     reducer: Callable[[Iterable[Any]], R]
     batch_size: int = 1
+    parallel: Optional[str] = None
     max_concurrency: Optional[int] = None
     _mapper_is_async: bool = field(default=False, init=False)
 
     def __post_init__(self):
+        parallel = resolve_parallel_kind(self.parallel)
+        if parallel != self.parallel:
+            object.__setattr__(self, 'parallel', parallel)
         object.__setattr__(
             self, '_mapper_is_async', inspect.iscoroutinefunction(self.mapper),
         )
@@ -114,7 +117,7 @@ class MapReduceStep(Generic[T, R]):
     async def _map_item(self, item: T) -> Any:
         if self._mapper_is_async:
             return await self.mapper(item)
-        result = self.mapper(item)
+        result = await default_runner(self.mapper, item)
         if asyncio.iscoroutine(result):
             return await result
         return result
@@ -125,16 +128,23 @@ class MapReduceStep(Generic[T, R]):
             max_concurrency=self.max_concurrency,
         ))
 
+    def _map_batch_sync(self, batch: List[T]) -> List[Any]:
+        if self.parallel:
+            pool = _get_pool(self.parallel)
+            runner = wrap_worker(self.mapper)
+            return list(pool.map(runner, batch))
+        return list(map(self.mapper, batch))
+
     def run(self, items: Iterable[T]) -> R:
         results: List[Any] = []
         batch: List[T] = []
         for item in items:
             batch.append(item)
             if len(batch) == self.batch_size:
-                results.extend(map(self.mapper, batch))
+                results.extend(self._map_batch_sync(batch))
                 batch.clear()
         if batch:
-            results.extend(map(self.mapper, batch))
+            results.extend(self._map_batch_sync(batch))
         return self.reducer(results)
 
     async def async_run(self, items: Iterable[T]) -> R:

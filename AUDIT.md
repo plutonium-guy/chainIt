@@ -11,63 +11,19 @@ Updated 2026-06-25 with findings from the multi-agent code-review pass on the
 Verified findings against the feature diff. Ordered by severity. Each item lists
 **what** is wrong and **how** to fix it.
 
-### CR-1. Shared context never reaches pool workers (HIGH)
+### CR-1. Shared context never reaches pool workers (HIGH) — RESOLVED (threads)
 
-**What:** `Pipeline._activate_context` sets a `contextvars.ContextVar` on the
-calling thread only. `pool.map` / `loop.run_in_executor` do **not** copy
-contextvars into worker threads/processes, so any step that runs off the calling
-thread sees `get_context() == {}`:
-- `@piped(parallel='thread'|'process')` steps,
-- `@piped(timeout=...)` steps (run via the thread pool),
-- sync functions executed inside an async pipeline (`run_in_executor`),
-- auto-mapped/batched work dispatched to executors.
+**Status:** Fixed for thread-pool workers via `wrap_worker` in [`context.py`](src/stepcraft/context.py), which snapshots active context at dispatch and re-applies it in worker threads. Covered by `test_graph_parallel_context_in_thread_pool`.
 
-README presents `get_context()` as the supported way for steps to read context,
-so this is a silent correctness gap.
+**Remaining limitation:** `parallel='process'` workers cannot inherit `contextvars` across pickle. Documented in README; use `parallel='thread'` when steps call `get_context()`.
 
-**Location:** `context.py:12`, `pipeline.py` (`_activate_context`, run loops),
-`step.py` (`_execute_parallel`, `_execute_parallel_async`, `_execute_sync`
-timeout branch, `_execute_auto_map*`, `_execute_batched*`).
+### CR-2. Half-open probe slot consumed before cancel check → breaker stuck (HIGH) — RESOLVED
 
-**How to fix:** capture the active context at dispatch and run workers inside it.
-- Threads: wrap submitted callables with `contextvars.copy_context().run(fn, ...)`,
-  or snapshot `get_context()` on the calling thread and re-set it inside the
-  worker wrapper.
-- Processes: contextvars cannot cross the pickle boundary — pass the context dict
-  explicitly to the worker and re-set it there, or document that process pools do
-  not see `get_context()`.
-- Add tests: `parallel='thread'`, `timeout=`, and async-with-sync-func steps all
-  reading `get_context()` inside a `Pipeline(context=...)`.
+**Status:** `_preflight_check` checks cancel before `_check_circuit_breaker()`. Regression test: `test_circuit_breaker_half_open_cancel_preserves_probe`.
 
-### CR-2. Half-open probe slot consumed before cancel check → breaker stuck (HIGH)
+### CR-3. Breaker reset happens before the schema check (MEDIUM) — RESOLVED
 
-**What:** In `_preflight_check`, `_check_circuit_breaker()` runs first and
-increments `_half_open_calls`; the cancel-event check runs *after*. If the call
-is cancelled, the probe slot is consumed but neither `_record_failure` nor
-`_reset_circuit_breaker` runs, leaving the breaker `HALF_OPEN` with the slot used
-**forever** — every later call raises `CircuitBreakerError` even once healthy.
-
-**Location:** `step.py` `_preflight_check` / `_check_circuit_breaker` (~L155, L387–391).
-
-**How to fix:** check the cancel event **before** consuming a probe slot (reorder
-`_preflight_check` so the cancel check precedes `_check_circuit_breaker`), or
-release the slot on cancellation (decrement `_half_open_calls` / restore state in
-a `finally`/except path when `CancelledError` is raised before the call runs).
-Add a regression test: half-open + cancel set → breaker still recovers later.
-
-### CR-3. Breaker reset happens before the schema check (MEDIUM)
-
-**What:** `_finalize_success` calls `_reset_circuit_breaker()` and *then* validates
-`schema`. A half-open probe whose function returns a wrong-typed value first
-closes the breaker, then raises `TypeError`, which records a failure against a
-now-`CLOSED` breaker (count from 0) instead of re-opening immediately.
-
-**Location:** `step.py:169–179` (`_finalize_success`).
-
-**How to fix:** validate the schema **before** calling `_reset_circuit_breaker()`
-so a schema failure is treated like any other probe failure. Add a test:
-`circuit_breaker` + `schema` where the recovered call returns the wrong type →
-breaker re-opens rather than closing.
+**Status:** `_finalize_success` validates schema before `_reset_circuit_breaker()`. Regression test: `test_circuit_breaker_schema_failure_reopens_half_open`.
 
 ### CR-4. Graph never activates shared context (MEDIUM)
 
@@ -83,19 +39,9 @@ same activation, ideally by extracting a shared `_activate_context` helper (e.g.
 into `context.py`) reused by `Pipeline` and `Graph`. Note this composes with CR-1
 (workers still need propagation). Add a Graph context test.
 
-### CR-5. `on_step` missing on half the public run surface (MEDIUM)
+### CR-5. `on_step` missing on half the public run surface (MEDIUM) — RESOLVED
 
-**What:** `on_step` was threaded through `run` / `async_run` / `run_detailed` /
-`async_run_detailed` only. `run_async`, `map`, `async_map`, `map_async` ignore it;
-`pipeline.run_async(seed, on_step=hook)` raises `TypeError`. README says "Pass
-`on_step` to any run method."
-
-**Location:** `pipeline.py` (`run_async`, `map`, `async_map`, `map_async`).
-
-**How to fix:** forward `on_step` from `map`/`async_map` into per-item `run`/
-`async_run`, and from `run_async`/`map_async` into the underlying coroutine; OR
-narrow the README to list exactly the four methods that accept it. Prefer
-forwarding for consistency. Add coverage for at least `map(on_step=...)`.
+**Status:** `on_step` forwarded through `map`, `async_map`, `run_async`, and `map_async`. Tests: `test_map_on_step_hook`, `test_run_async_on_step_hook`, `test_async_map_on_step_hook`, `test_map_async_on_step_hook`.
 
 ### CR-6. Spec with both `graph:` and `steps:` builds a silent linear pipeline (LOW)
 

@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import inspect
 from typing import Any
 
 from .constants import PIPE
+from .execution import default_runner
+from .lifecycle import StepLifecycle
 
 
-class Node(abc.ABC):
+class Node(StepLifecycle, abc.ABC):
     """Abstract base class for OOP-style pipeline steps."""
 
-    # Require every subclass that defines `process` to fully annotate it.
-    # Set ``require_annotations = False`` on a subclass to opt it out.
     require_annotations: bool = True
-    # When True, ``setup()`` runs once per pipeline run and ``teardown()`` runs
-    # when the pipeline exits (not after every ``run()`` call).
-    setup_once: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -26,63 +24,31 @@ class Node(abc.ABC):
 
         assert_fully_annotated(process, name=f"{cls.__name__}.process")
 
-    def setup(self) -> None:
-        """Called before execution. Override for initialization."""
-        pass
-
-    def teardown(self) -> None:
-        """Called after execution completes. Override for cleanup."""
-        pass
-
-    def _ensure_setup(self) -> None:
-        if self.setup_once:
-            if not getattr(self, '_setup_active', False):
-                self.setup()
-                self._setup_active = True
-        else:
-            self.setup()
-
-    def _teardown_once(self) -> None:
-        if getattr(self, '_setup_active', False):
-            self.teardown()
-            self._setup_active = False
-
     @abc.abstractmethod
     def process(self, *args, **kwargs) -> Any:
         """Core processing logic. Must be implemented by subclasses."""
         ...
 
     def run(self, input_value: Any = PIPE) -> Any:
-        self._ensure_setup()
-        try:
-            if input_value is PIPE:
-                result = self.process()
-            else:
-                result = self.process(input_value)
-            if not self.setup_once:
-                self.teardown()
-            return result
-        except Exception:
-            if not self.setup_once:
-                self.teardown()
-            raise
+        return self._run_lifecycle(self._invoke_process, input_value)
 
     async def async_run(self, input_value: Any = PIPE) -> Any:
-        self._ensure_setup()
-        try:
+        return await self._run_lifecycle_async(self._invoke_process_async, input_value)
+
+    def _invoke_process(self, input_value: Any) -> Any:
+        if input_value is PIPE:
+            return self.process()
+        return self.process(input_value)
+
+    async def _invoke_process_async(self, input_value: Any) -> Any:
+        if inspect.iscoroutinefunction(self.process):
             if input_value is PIPE:
-                result = self.process()
-            else:
-                result = self.process(input_value)
-            if asyncio.iscoroutine(result):
-                result = await result
-            if not self.setup_once:
-                self.teardown()
-            return result
-        except Exception:
-            if not self.setup_once:
-                self.teardown()
-            raise
+                return await self.process()
+            return await self.process(input_value)
+        result = await default_runner(self._invoke_process, input_value)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
 
     @property
     def _func_name(self) -> str:

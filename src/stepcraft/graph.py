@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .async_concurrency import gather_limited
 from .context import activate_context, wrap_worker
+from .execution import default_step_runner
 from .exceptions import GraphCycleError
 from .hooks import StepHook, _call_hook
 from .pools import _get_pool
@@ -109,17 +110,7 @@ class Graph:
         return step(input_value)
 
     async def _async_run_node(self, name: str, input_value: Any) -> Any:
-        step = self._nodes[name]
-        if hasattr(step, 'async_run'):
-            return await step.async_run(input_value)
-        if hasattr(step, 'run'):
-            loop = asyncio.get_running_loop()
-            call = wrap_worker(lambda: step.run(input_value))
-            return await loop.run_in_executor(None, call)
-        result = step(input_value)
-        if asyncio.iscoroutine(result):
-            return await result
-        return result
+        return await default_step_runner.run_async(self._nodes[name], input_value)
 
     def _sorted_parents(self, name: str) -> Tuple[str, ...]:
         ordered = self._parent_order.get(name)

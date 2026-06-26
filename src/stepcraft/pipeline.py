@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Union
@@ -9,6 +8,7 @@ from typing import Any, Dict, Generic, Iterable, List, Optional, Sequence, Union
 from .async_concurrency import gather_limited
 from .constants import R, T
 from .context import activate_context, wrap_worker
+from .execution import default_step_runner
 from .hooks import StepHook, _call_hook
 from .node import Node
 from .pools import _get_pool, cleanup_pools
@@ -110,11 +110,7 @@ class Pipeline(Generic[T, R]):
             self._teardown_setup_once_step(step)
 
     async def _await_step(self, step: Any, step_input: Any) -> Any:
-        if hasattr(step, 'async_run'):
-            return await step.async_run(step_input)
-        loop = asyncio.get_running_loop()
-        call = wrap_worker(functools.partial(step.run, step_input))
-        return await loop.run_in_executor(None, call)
+        return await default_step_runner.run_async(step, step_input)
 
     def run(
         self,
@@ -257,8 +253,10 @@ class Pipeline(Generic[T, R]):
         max_concurrency: Optional[int] = None,
     ) -> List[Any]:
         """Apply pipeline to each item asynchronously."""
-        tasks = [self.async_run(item, on_step=on_step) for item in items]
-        return await gather_limited(tasks, max_concurrency=max_concurrency)
+        return await gather_limited(
+            (self.async_run(item, on_step=on_step) for item in items),
+            max_concurrency=max_concurrency,
+        )
 
     def run_async(
         self, seed: Any = None, *, on_step: Optional[StepHook] = None,

@@ -457,6 +457,7 @@ Tuning checklist:
 | CPU-bound, pickleable funcs | `@piped(parallel='process')` with module-level functions |
 | Free-threaded CPython 3.14t | `parallel='auto'` (threads already parallelize CPU work) |
 | Large async fan-out | `pipeline.async_map(..., max_concurrency=32)` or `@piped(max_concurrency=32)` |
+| Sync auto-map with cap | `@piped(max_concurrency=N)` on sync functions (bounded thread pool) |
 | Expensive one-time setup | `class MyNode(Node): setup_once = True` |
 | Hot inner loops | `STEPCRAFT_NO_BEARTYPE=1` or `@piped(typecheck=False)` |
 | Pool sizing | `configure_pools(thread_workers=8, process_workers=4)` then `cleanup_pools()` to apply |
@@ -470,6 +471,8 @@ configure_pools(thread_workers=8, process_workers=4)
 # Recreate pools after changing worker counts:
 cleanup_pools()
 ```
+
+Sync functions in async pipelines (`async_run`, `Graph.async_run`, mixed DAGs) are offloaded to the shared thread pool via `run_sync_in_pool`, so they honor `configure_pools`. Process pools do **not** inherit `get_context()` — use `parallel='thread'` when steps read pipeline context.
 
 ## Development
 
